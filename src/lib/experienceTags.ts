@@ -84,10 +84,36 @@ LABEL_TO_ID.set(ROAD_TRIP_LABEL_FR, ROAD_TRIP_TAG_ID)
 
 const VALID_IDS = new Set<string>([...EXPERIENCE_TAG_DEFS.map(def => def.id), ROAD_TRIP_TAG_ID])
 
+/** Libellé sans emoji de tête, en minuscules et sans accents, pour comparer d'anciennes variantes. */
+function plainTagText(label: string): string {
+  return label
+    .replace(/^[^\p{L}\p{N}]+/u, '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .trim()
+}
+
+const PLAIN_TEXT_TO_ID = new Map<string, string>()
+for (const def of EXPERIENCE_TAG_DEFS) {
+  PLAIN_TEXT_TO_ID.set(plainTagText(def.en), def.id)
+  PLAIN_TEXT_TO_ID.set(plainTagText(def.fr), def.id)
+}
+// Anciennes formulations des tags, enregistrées avant la v2.
+for (const [text, id] of [
+  ['patrimoine marquant', 'patrimoine'],
+  ['striking heritage', 'patrimoine'],
+  ['plage & baignade', 'plage'],
+  ['beach & swimming', 'plage'],
+  ['city to wander', 'flanerie'],
+] as const) {
+  PLAIN_TEXT_TO_ID.set(text, id)
+}
+
 /** Resolves a stored `tripTypes` entry — a current ID or a pre-migration label string — to its ID. */
 function normalizeExperienceTagValue(value: string): string {
   if (VALID_IDS.has(value)) return value
-  return LABEL_TO_ID.get(value) ?? value
+  return LABEL_TO_ID.get(value) ?? PLAIN_TEXT_TO_ID.get(plainTagText(value)) ?? value
 }
 
 /**

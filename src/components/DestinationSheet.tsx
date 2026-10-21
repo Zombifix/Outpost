@@ -8,7 +8,7 @@ import { findDestinationAtLocation, findRoadtripStopsAtLocation } from '../utils
 import { Icon } from './Icon'
 import { HeroImage } from './HeroImage'
 import { useActivityFeed } from '../hooks/useActivityFeed'
-import { getExperienceTagLabel, ROAD_TRIP_TAG_ID } from '../lib/experienceTags'
+import { getExperienceTagLabel, normalizeStoredTripTypes, ROAD_TRIP_TAG_ID } from '../lib/experienceTags'
 import { lang, t } from '../i18n'
 import { AXIS_SHORT_LABELS, getAnswerParts } from '../lib/ratingQuestions'
 
@@ -248,12 +248,125 @@ const CRITERION_LABELS: Record<CriterionKey, string> = {
 // (même règle que le calcul, cf. computeTierBreakdown dans src/utils.ts).
 const WOW_CRITERIA = new Set<CriterionKey>(['culture', 'nature', 'food', 'night', 'vibeBoost'])
 
+// ─── Fiche : faits du voyage en tuiles et tags en puces (sans micro-titres) ──
+const COMPANION_EMOJI: Record<NonNullable<Destination['companions']>, string> = {
+  solo: '🧍',
+  couple: '💑',
+  amis: '👯',
+  famille: '👨‍👩‍👧',
+  travail: '💼',
+}
+
+type TripFact = { key: string; value: string; caption: string }
+
+function capitalizeFirst(text: string) {
+  return text ? text[0].toUpperCase() + text.slice(1) : text
+}
+
+function formatFactDuration(days: number) {
+  if (days % 365 === 0) {
+    const years = days / 365
+    return t(`${years} yr${years > 1 ? 's' : ''}`, `${years} an${years > 1 ? 's' : ''}`)
+  }
+  if (days % 30 === 0) return t(`${days / 30} mo`, `${days / 30} mois`)
+  return t(`${days} day${days > 1 ? 's' : ''}`, `${days} jour${days > 1 ? 's' : ''}`)
+}
+
+function getTripFacts(destination: Destination): TripFact[] {
+  const facts: TripFact[] = []
+  if (destination.tripYear) {
+    facts.push({
+      key: 'year',
+      value: String(destination.tripYear),
+      caption: destination.livedThere
+        ? t('moved there', 'arrivée')
+        : getVisitCount(destination) > 1
+          ? t(`${getVisitCount(destination)} visits`, `${getVisitCount(destination)} visites`)
+          : t('year', 'année'),
+    })
+  }
+  if (destination.tripDays) {
+    facts.push({
+      key: 'duration',
+      value: formatFactDuration(destination.tripDays),
+      caption: destination.livedThere ? t('lived there', 'sur place') : t('trip', 'séjour'),
+    })
+  }
+  if (destination.companions) {
+    facts.push({
+      key: 'with',
+      value: `${COMPANION_EMOJI[destination.companions]} ${capitalizeFirst(COMPANION_LABELS[destination.companions].replace(/^(En |Entre )/, ''))}`,
+      caption: t('with', 'avec'),
+    })
+  }
+  if (destination.personalBudget) {
+    const budget = Number(destination.personalBudget)
+    const perDay = destination.tripDays ? budget / destination.tripDays : null
+    facts.push({
+      key: 'spent',
+      value: `${Math.round(perDay ?? budget)} €`,
+      caption: perDay ? t('per day', 'par jour') : t('spent', 'dépensés'),
+    })
+  }
+  return facts
+}
+
+const MAX_FACT_TAGS = 6
+
+/** Tags du voyage, anciens libellés compris, dédoublonnés par identifiant. */
+function getFactTags(destination: Destination): string[] {
+  const legacy = destination.standoutTags?.length ? destination.standoutTags : destination.standout ? [destination.standout] : []
+  const ids = normalizeStoredTripTypes([...(destination.tripTypes ?? []), ...legacy]) ?? []
+  const labels = ids.filter(id => id !== ROAD_TRIP_TAG_ID).map(id => getExperienceTagLabel(id))
+  return [...new Set(labels)]
+}
+
+function TripFacts({ destination }: { destination: Destination }) {
+  const facts = getTripFacts(destination)
+  const tags = getFactTags(destination)
+  if (facts.length === 0 && tags.length === 0) return null
+  return (
+    <section className="sheet-section" aria-label={t('The trip', 'Le voyage')}>
+      <h3 className="sheet-section-title">
+        <span aria-hidden="true">🧳</span>
+        {t('The trip', 'Le voyage')}
+      </h3>
+    <div className="trip-facts">
+      {facts.length > 0 && (
+        <div className="trip-facts-grid" style={{ '--facts': facts.length } as CSSProperties}>
+          {facts.map(fact => (
+            <div className="trip-fact" key={fact.key}>
+              <strong>{fact.value}</strong>
+              <span>{fact.caption}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {tags.length > 0 && (
+        <div className="trip-facts-tags" aria-label={t('Tags', 'Tags')}>
+          {tags.slice(0, MAX_FACT_TAGS).map(tag => <span key={tag}>{tag}</span>)}
+          {tags.length > MAX_FACT_TAGS && <span className="trip-facts-tags-more">+{tags.length - MAX_FACT_TAGS}</span>}
+        </div>
+      )}
+    </div>
+    </section>
+  )
+}
+
+const ANSWER_TONE_ORDER = { wow: 0, neutral: 1, flop: 2 } as const
+
+function getAnswerTone(key: CriterionKey, value: number): keyof typeof ANSWER_TONE_ORDER {
+  return value >= 5 && WOW_CRITERIA.has(key) ? 'wow' : value <= 1 ? 'flop' : 'neutral'
+}
+
 function AnswerTiles({ criteria }: { criteria: ReturnType<typeof getCriteria> }) {
+  // Ce qui t'a marqué d'abord, le neutre ensuite, les déceptions à la fin.
+  const sorted = [...criteria].sort((a, b) => ANSWER_TONE_ORDER[getAnswerTone(a[0], a[1])] - ANSWER_TONE_ORDER[getAnswerTone(b[0], b[1])])
   return (
     <div className="answer-tiles">
-      {criteria.map(([key, value, icon]) => {
+      {sorted.map(([key, value, icon]) => {
         const parts = getAnswerParts(key, value)
-        const tone = value >= 5 && WOW_CRITERIA.has(key) ? 'wow' : value <= 1 ? 'flop' : 'neutral'
+        const tone = getAnswerTone(key, value)
         return (
           <div className={`answer-tile answer-tile--${tone}`} key={key}>
             <span className="answer-tile-emoji" aria-hidden="true">
@@ -815,12 +928,6 @@ function DestinationCardContent({
               {t('You', 'Toi')} + {compareWith.friend.displayName.split(' ')[0]}
             </span>
           )}
-          {getHeroPills(destination).map(pill => (
-            <span key={pill.label} className={`intent-pill destination-hero-pill destination-hero-pill--${pill.tone}`}>
-              <span aria-hidden="true">{pill.emoji}</span>
-              {pill.label}
-            </span>
-          ))}
           {canEditOwnDestination && coupDeCoeur && (
             <button
               className="coup-de-coeur-button destination-hero-favorite is-active"
@@ -981,9 +1088,7 @@ function DestinationCardContent({
           )}
         </div>
       )}
-      {!compareWith && context.hasContext && (
-        <ContextBlock context={context} ariaLabel={t('Trip context', 'Contexte du voyage')} />
-      )}
+      {!compareWith && <TripFacts destination={destination} />}
       {compareWith && (
         <>
           <div className="compare-meta" aria-label={t(`Comparison with ${compareWith.friend.displayName}`, `Comparaison avec ${compareWith.friend.displayName}`)}>
@@ -1125,7 +1230,7 @@ function DestinationCardContent({
           })()}
         </>
       )}
-      {(criteria.length > 0 || compareWith) && <h3 className="card-section-label card-section-title">{t('Your answers', 'Tes réponses')}</h3>}
+      {compareWith && <h3 className="card-section-label card-section-title">{t('Ratings by criterion', 'Notes par critère')}</h3>}
       {compareWith && compareCriteria.length > 0 ? (
         <div className="compare-ratings" aria-label={t(`Comparison with ${compareWith.friend.displayName}`, `Comparaison avec ${compareWith.friend.displayName}`)}>
           <div className="compare-ratings-head">
@@ -1158,9 +1263,25 @@ function DestinationCardContent({
             })}
           </div>
         </div>
-      ) : (
-        <AnswerTiles criteria={criteria} />
-      )}
+      ) : criteria.length > 0 ? (
+        <section className="sheet-section" aria-label={t('Your take', 'Ton avis')}>
+          <h3 className="sheet-section-title">
+            <span aria-hidden="true">💬</span>
+            {t('Your take', 'Ton avis')}
+          </h3>
+          {getHeroPills(destination).length > 0 && (
+            <div className="verdict-pills">
+              {getHeroPills(destination).map(pill => (
+                <span key={pill.label} className={`verdict-pill verdict-pill--${pill.tone}`}>
+                  <span aria-hidden="true">{pill.emoji}</span>
+                  {pill.label}
+                </span>
+              ))}
+            </div>
+          )}
+          <AnswerTiles criteria={criteria} />
+        </section>
+      ) : null}
       {compareWith && criteria.length === 0 && (
         <p className="compare-fallback-empty">
           {isFriendOnlyComparison

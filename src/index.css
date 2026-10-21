@@ -14710,9 +14710,8 @@ h3.compare-insight-headline {
 }
 
 .destination-hero::after {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 30%),
-    linear-gradient(180deg, transparent, rgba(8, 18, 32, 0.2) 45%, rgba(8, 18, 32, 0.58));
+  /* Pas de voile blanc en haut : il délavait la photo sans rien apporter. */
+  background: linear-gradient(180deg, transparent, rgba(8, 18, 32, 0.2) 45%, rgba(8, 18, 32, 0.58));
 }
 
 .map-controls {
@@ -19863,3 +19862,162 @@ html.lg-on [data-lg='panel'] {
     inset 0 0 18px rgba(255, 255, 255, 0.28);
 }
 
+/* ─── Fiche destination : faits du voyage en tuiles (notation v2) ───────────
+   Valeur en grand, légende en petit dessous ; tags en une rangée de puces.
+   Pas de micro-titres : chaque bloc se comprend seul. */
+.trip-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.trip-facts-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--facts, 4), minmax(0, 1fr));
+  gap: 8px;
+}
+
+.trip-fact {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 12px 8px 10px;
+  border: 1px solid rgba(219, 228, 243, 0.9);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.78);
+  text-align: center;
+}
+
+.trip-fact strong {
+  color: #1e2945;
+  font-size: 15px;
+  font-weight: var(--weight-bold);
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.trip-fact span {
+  color: #7a869d;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+}
+
+.trip-facts-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.trip-facts-tags span {
+  padding: 6px 11px;
+  border: 1px solid rgba(219, 228, 243, 0.9);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #34405a;
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+/* Fiche : sections titrées (Le voyage, Ton avis). Les faits et les tags
+   partagent un panneau teinté pour montrer qu'ils vont ensemble. */
+.sheet-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.sheet-section-title,
+.destination-card h3.sheet-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: #1e2945;
+  font-size: 15px;
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.01em;
+}
+
+.destination-card h3.sheet-section-title {
+  margin: 0;
+  color: #1e2945;
+  font-size: 15px;
+  font-weight: var(--weight-bold);
+  letter-spacing: -0.01em;
+  text-transform: none;
+}
+
+.sheet-section-title span {
+  font-size: 16px;
+}
+
+.sheet-section .trip-facts {
+  margin-bottom: 0;
+  padding: 10px;
+  border-radius: 20px;
+  background: rgba(232, 238, 248, 0.6);
+}
+
+.sheet-section .trip-facts-tags {
+  padding: 0 2px 2px;
+}
+
+
+/* Fiche : verdict et envie de retour en tête de « Ton avis » (plus sur la photo). */
+.verdict-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.verdict-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(219, 228, 243, 0.9);
+  background: rgba(255, 255, 255, 0.78);
+  color: #34405a;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+}
+
+.verdict-pill--positive {
+  border-color: rgba(46, 160, 92, 0.28);
+  background: rgba(232, 248, 238, 0.9);
+  color: #23794a;
+}
+
+.verdict-pill--negative {
+  border-color: rgba(217, 63, 88, 0.24);
+  background: rgba(255, 238, 240, 0.9);
+  color: #b23650;
+}
+
+/* Tuiles de faits : sur une carte étroite, deux colonnes au lieu de quatre,
+   et une valeur trop longue se coupe proprement au lieu de déborder. */
+.trip-facts {
+  container-type: inline-size;
+}
+
+.trip-fact strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@container (max-width: 300px) {
+  .trip-facts-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.trip-facts-tags .trip-facts-tags-more {
+  color: #7a869d;
+}

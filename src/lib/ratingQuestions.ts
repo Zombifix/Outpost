@@ -186,7 +186,14 @@ const AXIS_PLURAL: Record<AxisKey, boolean> = {
 /** Emoji et libellé de la réponse choisie, pour l'afficher en carte. */
 export function getAnswerParts(key: QuestionKey, value: unknown): { emoji: string; text: string } | null {
   const question = QUESTIONS.find(q => q.key === key)
-  const answer = question?.answers.find(a => a.value === value)
+  if (!question) return null
+  let answer = question.answers.find(a => a.value === value)
+  // Notes antérieures à la v2 : on affiche la réponse la plus proche
+  // (à égalité, la plus haute) plutôt qu'un chiffre.
+  if (!answer && typeof value === 'number' && Number.isFinite(value)) {
+    const numeric = question.answers.filter((a): a is QuestionAnswer & { value: number } => typeof a.value === 'number')
+    answer = [...numeric].sort((a, b) => Math.abs(a.value - value) - Math.abs(b.value - value) || b.value - a.value)[0]
+  }
   if (!answer) return null
   const parsed = stripLeadingEmojiLabel(answer.label)
   return { emoji: parsed.leadingToken, text: parsed.text }
