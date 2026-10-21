@@ -800,6 +800,10 @@ export default function WorldMap({
         style: STYLE_URL,
         center: INIT_CENTER,
         zoom: INIT_ZOOM,
+        // Un seul monde : sans copies, MapLibre borne la carte à ±180° et arrête
+        // le dézoom quand le monde remplit l'écran. Ne pas ajouter de maxBounds
+        // [-180, 180] : les deux bords se confondent et le calcul du zoom plante.
+        renderWorldCopies: false,
         attributionControl: false,
         pitchWithRotate: false,
         dragRotate: false,
