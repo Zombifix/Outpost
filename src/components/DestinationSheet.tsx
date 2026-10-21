@@ -3,14 +3,14 @@ import type { CSSProperties } from 'react'
 import type { Destination, Friendship, Tier } from '../types'
 import { useMediaQuery } from '../hooks/useMediaQuery'
 import { TIER_COLORS } from '../data'
-import { computeTierBreakdown, formatVisitCountLabel, getDestinationScore, getDestinationTier, getMaxCoupDeCoeur, getVisitCount } from '../utils'
+import { formatVisitCountLabel, getDestinationScore, getDestinationTier, getMaxCoupDeCoeur, getVisitCount } from '../utils'
 import { findDestinationAtLocation, findRoadtripStopsAtLocation } from '../utils/duplicates'
 import { Icon } from './Icon'
 import { HeroImage } from './HeroImage'
 import { useActivityFeed } from '../hooks/useActivityFeed'
 import { getExperienceTagLabel, ROAD_TRIP_TAG_ID } from '../lib/experienceTags'
 import { lang, t } from '../i18n'
-import { AXIS_SHORT_LABELS, buildTierExplanation, getAnswerParts } from '../lib/ratingQuestions'
+import { AXIS_SHORT_LABELS, getAnswerParts } from '../lib/ratingQuestions'
 
 interface DestinationSheetProps {
   destination: Destination
@@ -247,164 +247,6 @@ const CRITERION_LABELS: Record<CriterionKey, string> = {
 // Axes qui peuvent émerveiller : leur meilleure réponse est mise en avant
 // (même règle que le calcul, cf. computeTierBreakdown dans src/utils.ts).
 const WOW_CRITERIA = new Set<CriterionKey>(['culture', 'nature', 'food', 'night', 'vibeBoost'])
-
-// ─── Résumé de la fiche (notation v2), façon listes groupées iOS ───────────
-// 1. Le verdict : tier, nom du tier, phrase d'explication.
-// 2. « Ce que tu retiens » en citation.
-// 3. Tes réponses, puis le voyage, puis les tags : une ligne par info,
-//    libellé à gauche, valeur à droite, sans petits titres.
-
-const SHEET_TIER_LABELS: Record<Tier, string> = {
-  S: t('Gem', 'Pépite'),
-  A: t('Great', 'Génial'),
-  B: t('Nice', 'Sympa'),
-  C: t('Mixed', 'Mitigé'),
-  D: t('Not for me', 'Pas pour moi'),
-}
-
-const RETURN_LABELS: Record<NonNullable<Destination['returnIntent']>, string> = {
-  tomorrow: t('Tomorrow, no question', 'Demain, sans hésiter'),
-  someday: t('Someday, sure', 'Un jour, oui'),
-  once: t('Once was enough', 'Une fois, ça suffit'),
-}
-
-type SheetRow = { key: string; icon: string; label: string; value: string; tone?: 'wow' | 'flop' }
-
-function formatTripDuration(days: number) {
-  if (days % 365 === 0) {
-    const years = days / 365
-    return t(`${years} year${years > 1 ? 's' : ''}`, `${years} an${years > 1 ? 's' : ''}`)
-  }
-  if (days % 30 === 0) {
-    const months = days / 30
-    return t(`${months} month${months > 1 ? 's' : ''}`, `${months} mois`)
-  }
-  if (days % 7 === 0 && days >= 14) {
-    const weeks = days / 7
-    return t(`${weeks} weeks`, `${weeks} semaines`)
-  }
-  return t(`${days} day${days > 1 ? 's' : ''}`, `${days} jour${days > 1 ? 's' : ''}`)
-}
-
-function getAnswerRows(destination: Destination): SheetRow[] {
-  const rows: SheetRow[] = getCriteria(destination).map(([key, value, icon]) => {
-    const parts = getAnswerParts(key, value)
-    const tone = value >= 5 && WOW_CRITERIA.has(key) ? 'wow' as const : value <= 1 ? 'flop' as const : undefined
-    return {
-      key,
-      icon,
-      label: CRITERION_LABELS[key],
-      value: parts ? parts.text : Number(value).toFixed(1).replace('.', ','),
-      tone,
-    }
-  })
-  if (destination.returnIntent) {
-    rows.push({
-      key: 'return',
-      icon: 'plane',
-      label: t('Going back', 'Y retourner'),
-      value: RETURN_LABELS[destination.returnIntent],
-      tone: destination.returnIntent === 'tomorrow' ? 'wow' : undefined,
-    })
-  }
-  return rows
-}
-
-function getTripRows(destination: Destination): SheetRow[] {
-  const rows: SheetRow[] = []
-  if (destination.tripYear) {
-    rows.push({
-      key: 'year',
-      icon: 'calendar',
-      label: destination.livedThere ? t('Moved there', 'Arrivée') : t('Year', 'Année'),
-      value: String(destination.tripYear),
-    })
-  }
-  if (destination.tripDays) {
-    rows.push({
-      key: 'duration',
-      icon: 'clock',
-      label: destination.livedThere ? t('Lived there', 'Vécu sur place') : t('Duration', 'Durée'),
-      value: formatTripDuration(destination.tripDays),
-    })
-  }
-  const visitCount = getVisitCount(destination)
-  if (visitCount > 1) {
-    rows.push({ key: 'visits', icon: 'flame', label: t('Visits', 'Visites'), value: String(visitCount) })
-  }
-  if (destination.personalBudget) {
-    const budget = Number(destination.personalBudget)
-    const perDay = destination.tripDays ? budget / destination.tripDays : null
-    rows.push({
-      key: 'budget',
-      icon: 'coins',
-      label: t('Spent', 'Dépensé'),
-      value: perDay ? t(`~${Math.round(perDay)} € / day`, `~${Math.round(perDay)} € / jour`) : `~${Math.round(budget)} €`,
-    })
-  }
-  if (destination.companions) {
-    rows.push({ key: 'with', icon: 'users', label: t('With', 'Avec'), value: COMPANION_LABELS[destination.companions] })
-  }
-  return rows
-}
-
-function getSummaryTags(destination: Destination): string[] {
-  const tags = (destination.tripTypes ?? [])
-    .filter(id => id !== ROAD_TRIP_TAG_ID)
-    .map(id => getExperienceTagLabel(id))
-  const legacy = filterDisplayTags(destination.standoutTags?.length ? destination.standoutTags : destination.standout ? [destination.standout] : [])
-  return [...tags, ...legacy.filter(tag => !tags.includes(tag))]
-}
-
-function SheetRows({ rows, label }: { rows: SheetRow[]; label: string }) {
-  if (rows.length === 0) return null
-  return (
-    <section className="sheet-group" aria-label={label}>
-      {rows.map(row => (
-        <div className="sheet-row" key={row.key}>
-          <Icon name={row.icon} />
-          <span className="sheet-row-label">{row.label}</span>
-          <span className={`sheet-row-value${row.tone ? ` sheet-row-value--${row.tone}` : ''}`}>{row.value}</span>
-        </div>
-      ))}
-    </section>
-  )
-}
-
-function SheetSummary({ destination }: { destination: Destination }) {
-  const tier = getDestinationTier(destination)
-  const breakdown = computeTierBreakdown(destination)
-  const tags = getSummaryTags(destination)
-
-  return (
-    <div className="sheet-summary">
-      {tier && (
-        <section className="sheet-group sheet-verdict" aria-label={t('Rating', 'Note')}>
-          <span className={`tier-orb tier-${tier.toLowerCase()}`}>{tier}</span>
-          <div className="sheet-verdict-copy">
-            <strong style={{ color: TIER_COLORS[tier].label }}>{SHEET_TIER_LABELS[tier]}</strong>
-            {breakdown && <p>{buildTierExplanation(breakdown)}</p>}
-          </div>
-        </section>
-      )}
-      {destination.memoryNote && (
-        <p className="sheet-memory-note">
-          {t(`"${destination.memoryNote}"`, `« ${destination.memoryNote} »`)}
-        </p>
-      )}
-      <SheetRows rows={getAnswerRows(destination)} label={t('Your answers', 'Tes réponses')} />
-      <SheetRows rows={getTripRows(destination)} label={t('The trip', 'Le voyage')} />
-      {tags.length > 0 && (
-        <section className="sheet-group" aria-label={t('Tags', 'Tags')}>
-          <div className="sheet-row sheet-row--tags">
-            <Icon name="sliders" />
-            <span className="sheet-row-value">{tags.join(' · ')}</span>
-          </div>
-        </section>
-      )}
-    </div>
-  )
-}
 
 function AnswerTiles({ criteria }: { criteria: ReturnType<typeof getCriteria> }) {
   return (
@@ -973,6 +815,12 @@ function DestinationCardContent({
               {t('You', 'Toi')} + {compareWith.friend.displayName.split(' ')[0]}
             </span>
           )}
+          {getHeroPills(destination).map(pill => (
+            <span key={pill.label} className={`intent-pill destination-hero-pill destination-hero-pill--${pill.tone}`}>
+              <span aria-hidden="true">{pill.emoji}</span>
+              {pill.label}
+            </span>
+          ))}
           {canEditOwnDestination && coupDeCoeur && (
             <button
               className="coup-de-coeur-button destination-hero-favorite is-active"
@@ -1133,7 +981,9 @@ function DestinationCardContent({
           )}
         </div>
       )}
-      {!compareWith && <SheetSummary destination={destination} />}
+      {!compareWith && context.hasContext && (
+        <ContextBlock context={context} ariaLabel={t('Trip context', 'Contexte du voyage')} />
+      )}
       {compareWith && (
         <>
           <div className="compare-meta" aria-label={t(`Comparison with ${compareWith.friend.displayName}`, `Comparaison avec ${compareWith.friend.displayName}`)}>
@@ -1275,7 +1125,7 @@ function DestinationCardContent({
           })()}
         </>
       )}
-      {compareWith && <h3 className="card-section-label card-section-title">{t('Ratings by criterion', 'Notes par critère')}</h3>}
+      {(criteria.length > 0 || compareWith) && <h3 className="card-section-label card-section-title">{t('Your answers', 'Tes réponses')}</h3>}
       {compareWith && compareCriteria.length > 0 ? (
         <div className="compare-ratings" aria-label={t(`Comparison with ${compareWith.friend.displayName}`, `Comparaison avec ${compareWith.friend.displayName}`)}>
           <div className="compare-ratings-head">
@@ -1308,9 +1158,9 @@ function DestinationCardContent({
             })}
           </div>
         </div>
-      ) : compareWith ? (
+      ) : (
         <AnswerTiles criteria={criteria} />
-      ) : null}
+      )}
       {compareWith && criteria.length === 0 && (
         <p className="compare-fallback-empty">
           {isFriendOnlyComparison
@@ -1414,6 +1264,12 @@ function RoadTripCardContent({
           <span className="intent-pill destination-hero-pill">
             {stageCount} {t('stop', 'étape')}{stageCount > 1 ? 's' : ''}
           </span>
+          {getHeroPills(destination).map(pill => (
+            <span key={pill.label} className={`intent-pill destination-hero-pill destination-hero-pill--${pill.tone}`}>
+              <span aria-hidden="true">{pill.emoji}</span>
+              {pill.label}
+            </span>
+          ))}
           {canEditOwnDestination && coupDeCoeur && (
             <button
               className="coup-de-coeur-button destination-hero-favorite is-active"
@@ -1439,7 +1295,23 @@ function RoadTripCardContent({
         </div>
       </div>
 
-      <SheetSummary destination={destination} />
+      <section className="roadtrip-score-card" aria-label={t('Overall road trip rating', 'Note globale du road trip')}>
+        <div>
+          <span>{t('Overall rating', 'Note globale')}</span>
+          <strong>{score}</strong>
+        </div>
+        <p>{t(
+          'Rate the road trip as the experience you actually lived. Stops tell the story of the route; detail a city only if it deserves its own entry.',
+          'Note le road trip comme l’expérience que tu as vraiment vécue. Les étapes racontent la route ; détaille une ville seulement si elle mérite sa propre fiche.'
+        )}</p>
+      </section>
+
+      {context.hasContext && (
+        <ContextBlock context={context} className="roadtrip-context" ariaLabel={t('Road trip context', 'Contexte du road trip')} />
+      )}
+
+      <h3>{t('Overall ratings', 'Notes globales')}</h3>
+      <AnswerTiles criteria={criteria} />
 
       <section className="roadtrip-itinerary" aria-label={t('Road trip itinerary', 'Itinéraire du road trip')}>
         <div className="roadtrip-section-head">
