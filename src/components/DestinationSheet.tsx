@@ -89,6 +89,11 @@ function getReturnPill(destination: Destination): HeroPill | null {
   return null
 }
 
+/** Pastilles du haut de la fiche : deux au plus, pour ne pas recouvrir la photo. */
+function getHeroPills(destination: Destination): HeroPill[] {
+  return [getRecoPill(destination), getReturnPill(destination)].filter((p): p is HeroPill => p !== null)
+}
+
 function getFeelingRecoPills(destination: Destination): HeroPill[] {
   return [getRecoPill(destination), getReturnPill(destination), getFeelingPill(destination)].filter((p): p is HeroPill => p !== null)
 }
@@ -227,13 +232,14 @@ function getDestinationContext(destination: Destination) {
   return { meta, details, hasContext: meta.length > 0 || details.length > 0 }
 }
 
-type CriterionKey = 'food' | 'night' | 'culture' | 'nature' | 'value' | 'ease'
+type CriterionKey = 'food' | 'night' | 'culture' | 'nature' | 'vibeBoost' | 'value' | 'ease'
 
 const CRITERION_LABELS: Record<CriterionKey, string> = {
   food: AXIS_SHORT_LABELS.food,
   night: AXIS_SHORT_LABELS.night,
   culture: AXIS_SHORT_LABELS.culture,
   nature: AXIS_SHORT_LABELS.nature,
+  vibeBoost: AXIS_SHORT_LABELS.vibeBoost,
   value: AXIS_SHORT_LABELS.value,
   ease: AXIS_SHORT_LABELS.ease,
 }
@@ -248,11 +254,12 @@ const CRITERION_ICONS: Record<CriterionKey, string> = {
   night: 'martini',
   culture: 'temple',
   nature: 'mountain',
+  vibeBoost: 'users',
   value: 'coins',
   ease: 'compass',
 }
 
-const CRITERION_KEYS: CriterionKey[] = ['food', 'night', 'culture', 'nature', 'value', 'ease']
+const CRITERION_KEYS: CriterionKey[] = ['culture', 'nature', 'food', 'night', 'vibeBoost', 'ease', 'value']
 
 function getCriteria(destination: Destination) {
   const base: Array<[CriterionKey, number, string]> = []
@@ -785,7 +792,7 @@ function DestinationCardContent({
               {t('You', 'Toi')} + {compareWith.friend.displayName.split(' ')[0]}
             </span>
           )}
-          {getFeelingRecoPills(destination).map(pill => (
+          {getHeroPills(destination).map(pill => (
             <span key={pill.label} className={`intent-pill destination-hero-pill destination-hero-pill--${pill.tone}`}>
               <span aria-hidden="true">{pill.emoji}</span>
               {pill.label}
@@ -1247,7 +1254,7 @@ function RoadTripCardContent({
           <span className="intent-pill destination-hero-pill">
             {stageCount} {t('stop', 'étape')}{stageCount > 1 ? 's' : ''}
           </span>
-          {getFeelingRecoPills(destination).map(pill => (
+          {getHeroPills(destination).map(pill => (
             <span key={pill.label} className={`intent-pill destination-hero-pill destination-hero-pill--${pill.tone}`}>
               <span aria-hidden="true">{pill.emoji}</span>
               {pill.label}
