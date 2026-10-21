@@ -92,6 +92,7 @@ const SEARCH_ALIASES: Record<string, string> = {
   thailande: 'Thailand',
   'cote-d-azur': 'French Riviera',
   'cote d azur': 'French Riviera',
+  'ile maurice': 'Mauritius',
 }
 // Wikivoyage banners (Wikidata P948) are curated ~7:1 panoramas of the place itself.
 const BANNER_SCORE_BONUS = 100
@@ -366,7 +367,8 @@ async function searchWikipediaSummary(name: string): Promise<Candidate[]> {
   const thumbnail = summary.thumbnail as Record<string, unknown> | undefined
   const image = original ?? thumbnail
   const imageUrl = typeof image?.source === 'string' ? image.source : ''
-  if (!imageUrl) return []
+  // Country and region summaries often lead with a flag, a coat of arms or a map.
+  if (!imageUrl || /flag|coat_of_arms|blason|map|locator|\.svg/i.test(imageUrl)) return []
   const width = typeof image?.width === 'number' ? image.width : undefined
   const height = typeof image?.height === 'number' ? image.height : undefined
   const page = summary.content_urls as { desktop?: { page?: string } } | undefined
@@ -474,7 +476,10 @@ async function fetchCommonsBanner(fileName: string, query: string): Promise<Cand
 // Wikivoyage banner of the destination, found through the Wikidata item
 // linked to its Wikivoyage or Wikipedia article (property P948).
 async function searchWikivoyageBanner(input: DestinationInput): Promise<Candidate | null> {
-  const titles = Array.from(new Set([input.name?.trim() ?? '', searchName(input.name ?? '')].filter(Boolean)))
+  const name = input.name?.trim() ?? ''
+  // "Shanghaï" has no article, "Shanghai" does: also try the name without accents.
+  const plain = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  const titles = Array.from(new Set([name, plain, searchName(name)].filter(Boolean)))
   if (!titles.length) return null
   const hasCoords = Number.isFinite(input.lat) && Number.isFinite(input.lng)
   const wide = input.kind === 'zone' || WIDE_OSM_VALUES.includes(input.osmValue ?? '')
