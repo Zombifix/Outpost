@@ -203,7 +203,8 @@ set food = null, night = null, culture = null, nature = null, value = null,
     score = null, tier = null,
     standout = null, standout_tags = null,
     trip_types = case
-      when 'roadtrip' = any(trip_types) then array['roadtrip']
+      -- l'ancien libellé « 🚗 Road trip » existe encore sur certaines lignes
+      when exists (select 1 from unnest(trip_types) as tag where tag ilike '%road%') then array['roadtrip']
       else null
     end;
 
