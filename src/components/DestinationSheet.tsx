@@ -869,6 +869,14 @@ function DestinationCardContent({
                 {t('Edit', 'Modifier')}
               </button>
             )}
+            {canEditOwnDestination && (coupDeCoeur || !coupDeCoeurDisabled) && (
+              <button onClick={() => { closeMenu(); onCoupDeCoeur() }}>
+                <Icon name="heart" />
+                {coupDeCoeur
+                  ? t('Remove from favorites', 'Retirer des coups de cœur')
+                  : t(`Add to favorites (${coupDeCoeurCount}/${maxCoupDeCoeur})`, `Ajouter aux coups de cœur (${coupDeCoeurCount}/${maxCoupDeCoeur})`)}
+              </button>
+            )}
             {canEditOwnDestination && (
               <button className="danger" onClick={() => setConfirmDelete(true)}>
                 <Icon name="trash" />
@@ -917,6 +925,12 @@ function DestinationCardContent({
           <HeroImage src={destination.image} />
         )}
         <span className={`tier-orb destination-hero-badge tier-${displayTier ? displayTier.toLowerCase() : 'unrated'}`}>{displayTier ?? '?'}</span>
+        {coupDeCoeur && (
+          <span className="destination-hero-favorite-badge">
+            <Icon name="heart" />
+            {t('Favorite', 'Coup de cœur')}
+          </span>
+        )}
         <div className="destination-hero-overlay">
         <h2 className="destination-hero-title">
           {destination.name}{destination.country && destination.country !== destination.name ? `, ${destination.country}` : ''}
@@ -927,17 +941,6 @@ function DestinationCardContent({
               <Icon name="users" />
               {t('You', 'Toi')} + {compareWith.friend.displayName.split(' ')[0]}
             </span>
-          )}
-          {canEditOwnDestination && coupDeCoeur && (
-            <button
-              className="coup-de-coeur-button destination-hero-favorite is-active"
-              aria-label={t('Remove from favorites', 'Retirer des coups de cœur')}
-              title={t('Favorite — remove', 'Coup de cœur — retirer')}
-              onClick={onCoupDeCoeur}
-            >
-              <Icon name="heart" />
-              {t('Favorite', 'Coup de cœur')}
-            </button>
           )}
         </div>
         </div>
