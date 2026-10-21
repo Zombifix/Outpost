@@ -11,6 +11,7 @@ import {
   FRIENDS,
   FRIEND_DESTINATIONS,
   TIER_COLORS,
+  UNRATED_COLORS,
   TIER_ORDER,
 } from '../data'
 import { FAKE_FRIENDS_MODE, getFakeFriendDestinations } from '../hooks/_fakeFriends'
@@ -112,7 +113,7 @@ function getCountryFlag(destination: Destination): string | undefined {
 }
 
 function getAvgScore(destinations: Destination[]): number | null {
-  const ranked = destinations.filter(d => d.kind !== 'stop')
+  const ranked = destinations.filter(d => d.kind !== 'stop' && getDestinationTier(d) !== null)
   if (!ranked.length) return null
   return ranked.reduce((sum, d) => sum + getDestinationScore(d), 0) / ranked.length
 }
@@ -175,19 +176,31 @@ const DEMO_FRIEND_DESTINATIONS: Record<string, Destination[]> = {
 }
 
 const TIER_DESCRIPTIONS: Record<Tier, string> = {
-  S: t('Rare, defining experiences that stay with you.', 'Des expériences rares, marquantes, qui restent en mémoire.'),
-  A: t('Really great experiences I truly loved.', "De très belles expériences, que j'ai vraiment adorées."),
-  B: t('Pleasant experiences, nothing exceptional.', 'Des expériences agréables, sans être particulièrement marquantes.'),
-  C: t('Mixed experiences — not bad, but not memorable.', 'Des expériences mitigées, pas mauvaises, mais pas mémorables.'),
-  D: t('Disappointing experiences I would not repeat.', 'Des expériences décevantes, que je ne referais pas.'),
+  S: t("Favorites you'd send anyone to.", "Des coups de cœur où tu enverrais n'importe qui."),
+  A: t("Places you'd tell a friend to go for.", "Des endroits où tu dirais à un ami de foncer."),
+  B: t("Worth it, without getting carried away.", "Ça vaut le coup, sans s'emballer."),
+  C: t("Meh, there's better out there.", "Bof, il y a mieux ailleurs."),
+  D: t("Not your thing, you'd tell people to skip it.", "Pas pour toi, tu le déconseilles."),
 }
 
 const TIER_LABEL: Record<Tier, string> = {
   S: t('Gem', 'Pépite'),
   A: t('Great', 'Génial'),
   B: t('Nice', 'Sympa'),
-  C: t('Meh', 'Bof'),
-  D: t('Skip', 'À éviter'),
+  C: t('Mixed', 'Mitigé'),
+  D: t('Not for me', 'Pas pour moi'),
+}
+
+// Groupe « À noter » : destinations sans tier (notation v2, cf. docs/notation-v2.md).
+const UNRATED_LABEL = t('To rate', 'À noter')
+const UNRATED_DESCRIPTION = t('Not rated yet. Open one to rate it.', 'Pas encore notées. Ouvre-en une pour la noter.')
+
+function tierKey(tier: Tier | null) {
+  return tier ? tier.toLowerCase() : 'unrated'
+}
+
+function tierColors(tier: Tier | null) {
+  return tier ? TIER_COLORS[tier] : UNRATED_COLORS
 }
 
 function filterDestinations(list: Destination[], filter: TierListFilter, compareList: Destination[] = []): Destination[] {
@@ -248,10 +261,11 @@ function DestRow({
 }) {
   const isCoupDeCoeur = Boolean(myDest.coupDeCoeur)
   const myScore = getDestinationScore(myDest)
-  const friendScore = friendDest ? getDestinationScore(friendDest) : null
+  const friendScore = friendDest && getDestinationTier(friendDest) ? getDestinationScore(friendDest) : null
   const flagUrl = getCountryFlag(myDest)
-  const tier = scoreToTier(myScore)
-  const colors = TIER_COLORS[tier]
+  const tier = getDestinationTier(myDest)
+  const colors = tierColors(tier)
+  const myScoreLabel = tier ? myScore.toFixed(1) : '–'
   const intentEmoji = INTENT_EMOJI[myDest.intent]
   const intentLabel = INTENT_LABEL[myDest.intent]
 
@@ -309,7 +323,7 @@ function DestRow({
           )}
           {/* La note du peuple n'apparaît que quand elle raconte quelque chose :
               un désaccord d'au moins un tier avec ma propre note. */}
-          {communityRating && Math.abs(TIER_RANK[tier] - TIER_RANK[communityRating.tier]) >= 1 && (
+          {tier && communityRating && Math.abs(TIER_RANK[tier] - TIER_RANK[communityRating.tier]) >= 1 && (
             <CommunityBadge rating={communityRating} myTier={tier} />
           )}
         </div>
@@ -317,7 +331,7 @@ function DestRow({
           {friendDest !== undefined ? (
             <>
               <span className="dest-score-stacked-me" style={{ color: colors.pin } as React.CSSProperties}>
-                {myScore.toFixed(1)}
+                {myScoreLabel}
               </span>
               <span className="dest-score-stacked-friend">
                 {friendScore !== null ? friendScore.toFixed(1) : '–'}
@@ -325,7 +339,7 @@ function DestRow({
             </>
           ) : (
             <span className="dest-score-pill dest-score-pill--solo" style={{ borderColor: `${colors.pin}44` } as React.CSSProperties}>
-              {myScore.toFixed(1)}
+              {myScoreLabel}
             </span>
           )}
         </div>
@@ -477,7 +491,7 @@ function DestinationPreview({
       <div className="tier-destination-preview-body">
         <button className="tier-destination-preview-close" onClick={onClose} aria-label={t('Close preview', 'Fermer l\'aperçu')}>×</button>
         <div className="tier-preview-heading">
-          <span className={`tier-orb tier-${tier.toLowerCase()}`}>{tier}</span>
+          <span className={`tier-orb tier-${tier ? tier.toLowerCase() : 'unrated'}`}>{tier ?? '?'}</span>
           {destination.coupDeCoeur && <span className="tier-preview-favorite">♥ Favorite</span>}
         </div>
         <h3>{destination.name}, {destination.country}</h3>
@@ -516,7 +530,7 @@ function TierRow({
   onToggle,
   onSelectMine,
 }: {
-  tier: Tier
+  tier: Tier | null
   myDests: Destination[]
   friendDests: Destination[]
   friend: Friend | null
@@ -527,7 +541,7 @@ function TierRow({
   onToggle: () => void
   onSelectMine: (destination: Destination) => void
 }) {
-  const colors = TIER_COLORS[tier]
+  const colors = tierColors(tier)
   const mine = useMemo(() =>
     myDests
       .filter(d => getDestinationTier(d) === tier && d.kind !== 'stop')
@@ -545,17 +559,17 @@ function TierRow({
   const count = String(mine.length)
 
   return (
-    <article className={`tier-list-row tier-list-row-${tier.toLowerCase()}`}>
+    <article className={`tier-list-row tier-list-row-${tierKey(tier)}`}>
       <header onClick={onToggle}>
         <span
-          className={`tier-orb tier-${tier.toLowerCase()}`}
+          className={`tier-orb tier-${tierKey(tier)}`}
           style={{ boxShadow: `0 6px 16px ${colors.pin}33` }}
         >
-          {tier}
+          {tier ?? '?'}
         </span>
         <div className="tier-row-label-group">
-          <strong style={{ color: colors.label }}>{TIER_LABEL[tier]}</strong>
-          <span className="tier-row-description">{TIER_DESCRIPTIONS[tier]}</span>
+          <strong style={{ color: colors.label }}>{tier ? TIER_LABEL[tier] : UNRATED_LABEL}</strong>
+          <span className="tier-row-description">{tier ? TIER_DESCRIPTIONS[tier] : UNRATED_DESCRIPTION}</span>
         </div>
         <div className="tier-row-right">
           <span className="tier-row-count">{count}</span>
@@ -609,7 +623,7 @@ function DesktopTierCard({
   const score = getDestinationScore(destination)
   const flagUrl = getCountryFlag(destination)
   const tier = getDestinationTier(destination)
-  const colors = TIER_COLORS[tier]
+  const colors = tier ? TIER_COLORS[tier] : UNRATED_COLORS
 
   return (
     <article className={`tier-desktop-destination${isCoupDeCoeur ? ' is-coup-de-coeur' : ''}`}>
@@ -658,11 +672,11 @@ function DesktopTierColumn({
   destinations,
   onSelect,
 }: {
-  tier: Tier
+  tier: Tier | null
   destinations: Destination[]
   onSelect: (destination: Destination) => void
 }) {
-  const colors = TIER_COLORS[tier]
+  const colors = tierColors(tier)
   const sortedDestinations = useMemo(() =>
     destinations
       .filter(d => d.kind !== 'stop' && getDestinationTier(d) === tier)
@@ -671,18 +685,18 @@ function DesktopTierColumn({
   )
 
   return (
-    <article className={`tier-desktop-column tier-desktop-column--${tier.toLowerCase()}`}>
+    <article className={`tier-desktop-column tier-desktop-column--${tierKey(tier)}`}>
       <header className="tier-desktop-column-header">
         <div className="tier-desktop-column-heading">
           <span
-            className={`tier-orb tier-${tier.toLowerCase()} tier-desktop-column-orb`}
+            className={`tier-orb tier-${tierKey(tier)} tier-desktop-column-orb`}
             style={{ boxShadow: `0 8px 18px ${colors.pin}33` }}
           >
-            {tier}
+            {tier ?? '?'}
           </span>
           <div className="tier-desktop-column-copy">
-            <strong style={{ color: colors.label }}>{TIER_LABEL[tier]}</strong>
-            <span>{TIER_DESCRIPTIONS[tier]}</span>
+            <strong style={{ color: colors.label }}>{tier ? TIER_LABEL[tier] : UNRATED_LABEL}</strong>
+            <span>{tier ? TIER_DESCRIPTIONS[tier] : UNRATED_DESCRIPTION}</span>
           </div>
         </div>
         <span className="tier-desktop-column-count">{sortedDestinations.length}</span>
@@ -718,6 +732,7 @@ export default function TierListPage({
   const [pageMode, setPageMode] = useState<'personal' | 'global'>('personal')
   const [filter, setFilter] = useState<TierListFilter>('all')
   const [collapsed, setCollapsed] = useState<Record<Tier, boolean>>({ S: false, A: false, B: true, C: true, D: true })
+  const [unratedCollapsed, setUnratedCollapsed] = useState(false)
   const [comparePicker, setComparePicker] = useState(false)
   const [preview, setPreview] = useState<{ destination: Destination; ownerLabel: string; ownerColor?: string } | null>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
@@ -782,6 +797,7 @@ export default function TierListPage({
   const compareDenied = Boolean(friend && friendUserId && !realFriendAccess.allowed && realFriendAccess.deniedReason)
   const visibleFilters = friend ? COMPARE_TIER_FILTERS : BASE_TIER_FILTERS
   const myFiltered = useMemo(() => filterDestinations(destinations, filter, friendDests), [destinations, filter, friendDests])
+  const hasUnrated = useMemo(() => myFiltered.some(d => d.kind !== 'stop' && getDestinationTier(d) === null), [myFiltered])
   const friendFiltered = useMemo(() => filterDestinations(friendDests, filter, destinations), [friendDests, filter, destinations])
 
   useEffect(() => {
@@ -1204,6 +1220,14 @@ export default function TierListPage({
       {pageMode === 'personal' && (!friend || compareDenied) && (
         <>
           <section className="tier-desktop-columns page-mode-fade" aria-label={t('Rankings by tier', 'Classement par tier')}>
+            {hasUnrated && (
+              <DesktopTierColumn
+                key="desktop-unrated"
+                tier={null}
+                destinations={myFiltered}
+                onSelect={destination => openPreview(destination, t('Me', 'Moi'), 'var(--purple)')}
+              />
+            )}
             {TIER_ORDER.map(tier => (
               <DesktopTierColumn
                 key={`desktop-${tier}`}
@@ -1214,6 +1238,20 @@ export default function TierListPage({
             ))}
           </section>
           <section className="tier-list-rows tier-list-rows--solo-mobile page-mode-fade" aria-label={t('Rankings by tier', 'Classement par tier')}>
+            {hasUnrated && (
+              <TierRow
+                key="unrated"
+                tier={null}
+                myDests={myFiltered}
+                friendDests={[]}
+                friend={null}
+                sharedNames={sharedNames}
+                collapsed={unratedCollapsed}
+                communityRatings={communityRatings}
+                onToggle={() => setUnratedCollapsed(value => !value)}
+                onSelectMine={destination => openPreview(destination, t('Me', 'Moi'), 'var(--purple)')}
+              />
+            )}
             {TIER_ORDER.map(tier => (
               <TierRow
                 key={tier}

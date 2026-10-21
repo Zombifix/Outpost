@@ -15,13 +15,35 @@ export const ROAD_TRIP_TAG_ID = 'roadtrip'
 const ROAD_TRIP_LABEL_EN = '🚗 Road trip'
 const ROAD_TRIP_LABEL_FR = '🚗 Road trip'
 
-const EXPERIENCE_TAG_DEFS: ExperienceTagDef[] = [
-  { id: 'food',        en: '🍜 Food trip',           fr: '🍜 Food trip' },
-  { id: 'patrimoine',  en: '🏛️ Striking heritage',    fr: '🏛️ Patrimoine marquant' },
-  { id: 'flanerie',    en: '🏘️ City to wander',       fr: '🏘️ Ville à flâner' },
-  { id: 'beau',        en: '✨ Beautiful everywhere',  fr: '✨ Beau partout' },
-  { id: 'paysages',    en: '⛰️ Big landscapes',       fr: '⛰️ Grands paysages' },
-  { id: 'plage',       en: '🏖️ Beach & swimming',     fr: '🏖️ Plage & baignade' },
+type ExperienceTagFamily = 'feeling' | 'place' | 'info'
+
+interface OfferedTagDef extends ExperienceTagDef {
+  family: ExperienceTagFamily
+}
+
+// Tags proposés à la saisie (notation v2). Ils décrivent, ils ne notent pas :
+// aucun n'a d'effet sur le tier. Cf. docs/notation-v2.md.
+const OFFERED_TAG_DEFS: OfferedTagDef[] = [
+  { id: 'surprise',    family: 'feeling', en: '😮 Pleasant surprise',          fr: '😮 Belle surprise' },
+  { id: 'surcote',     family: 'feeling', en: '📉 Overrated',                  fr: '📉 Surcoté' },
+  { id: 'depaysant',   family: 'feeling', en: '🌏 A change of scene',          fr: '🌏 Dépaysant' },
+  { id: 'ressourcant', family: 'feeling', en: '🧘 Recharging',                 fr: '🧘 Ressourçant' },
+  { id: 'epuisant',    family: 'feeling', en: '😮‍💨 Exhausting',                fr: '😮‍💨 Épuisant' },
+  { id: 'flanerie',    family: 'place',   en: '🚶 Made for wandering',         fr: '🚶 Ville à flâner' },
+  { id: 'patrimoine',  family: 'place',   en: '🏛️ Lots of history',           fr: '🏛️ Patrimoine' },
+  { id: 'espaces',     family: 'place',   en: '⛰️ Wide open spaces',          fr: '⛰️ Grands espaces' },
+  { id: 'plage',       family: 'place',   en: '🏖️ Beach',                     fr: '🏖️ Plage' },
+  { id: 'foule',       family: 'info',    en: '👥 Too crowded',                fr: '👥 Trop de monde' },
+  { id: 'meteo',       family: 'info',    en: '🌧️ Bad luck with the weather', fr: '🌧️ Pas de chance avec la météo' },
+  { id: 'niche',       family: 'info',    en: '🎯 Not for everyone',           fr: '🎯 Pas pour tout le monde' },
+]
+
+// Anciens tags : plus proposés, mais toujours affichés sur les destinations
+// enregistrées avant la v2.
+const LEGACY_TAG_DEFS: ExperienceTagDef[] = [
+  { id: 'food',        en: '🍜 Food trip',            fr: '🍜 Food trip' },
+  { id: 'beau',        en: '✨ Beautiful everywhere', fr: '✨ Beau partout' },
+  { id: 'paysages',    en: '⛰️ Big landscapes',      fr: '⛰️ Grands paysages' },
   { id: 'nightlife',   en: '🌙 Nightlife',            fr: '🌙 Nightlife' },
   { id: 'ambiance',    en: '🎭 Local vibe',           fr: '🎭 Ambiance locale' },
   { id: 'facile',      en: '🧘 Easygoing',            fr: '🧘 Facile à vivre' },
@@ -31,13 +53,24 @@ const EXPERIENCE_TAG_DEFS: ExperienceTagDef[] = [
   { id: 'touristique', en: '📍 Too touristy',         fr: '📍 Trop touristique' },
   { id: 'pieges',      en: '🪤 Tourist traps',        fr: '🪤 Pièges à touristes' },
   { id: 'craignos',    en: '⚠️ Sketchy',              fr: '⚠️ Craignos' },
-  { id: 'surprise',    en: '😮 Pleasant surprise',    fr: '😮 Belle surprise' },
-  { id: 'surcote',     en: '📉 Overrated',            fr: '📉 Surcoté' },
+]
+
+const EXPERIENCE_TAG_DEFS: ExperienceTagDef[] = [...OFFERED_TAG_DEFS, ...LEGACY_TAG_DEFS]
+
+export const MAX_EXPERIENCE_TAGS = 3
+
+/** Paires qui s'excluent : choisir l'un désactive l'autre. */
+export const EXCLUSIVE_TAG_PAIRS: Array<[string, string]> = [['surprise', 'surcote']]
+
+export const EXPERIENCE_TAG_FAMILIES: { id: ExperienceTagFamily; label: string }[] = [
+  { id: 'feeling', label: t('How it felt', 'Ce que tu as ressenti') },
+  { id: 'place', label: t('Kind of place', 'Le genre de lieu') },
+  { id: 'info', label: t('Good to know', 'À savoir') },
 ]
 
 /** Tags for the wizard's chip picker: stable `id` to store, translated `label` to show. */
-export const EXPERIENCE_TAGS: { id: string; label: string }[] =
-  EXPERIENCE_TAG_DEFS.map(def => ({ id: def.id, label: t(def.en, def.fr) }))
+export const EXPERIENCE_TAGS: { id: string; label: string; family: ExperienceTagFamily }[] =
+  OFFERED_TAG_DEFS.map(def => ({ id: def.id, label: t(def.en, def.fr), family: def.family }))
 
 export const ROAD_TRIP_LABEL = t(ROAD_TRIP_LABEL_EN, ROAD_TRIP_LABEL_FR)
 

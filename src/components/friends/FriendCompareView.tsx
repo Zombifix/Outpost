@@ -109,9 +109,9 @@ function CommonDests({ mine, theirs, friendName }: { mine: Destination[]; theirs
   )
 }
 
-function TierBadge({ tier }: { tier: Tier }) {
+function TierBadge({ tier }: { tier: Tier | null }) {
   return (
-    <span className={`tier-orb tier-${tier.toLowerCase()} friend-compare-tier-orb`}>{tier}</span>
+    <span className={`tier-orb tier-${tier ? tier.toLowerCase() : 'unrated'} friend-compare-tier-orb`}>{tier ?? '?'}</span>
   )
 }
 

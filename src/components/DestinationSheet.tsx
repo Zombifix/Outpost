@@ -10,6 +10,7 @@ import { HeroImage } from './HeroImage'
 import { useActivityFeed } from '../hooks/useActivityFeed'
 import { getExperienceTagLabel, ROAD_TRIP_TAG_ID } from '../lib/experienceTags'
 import { lang, t } from '../i18n'
+import { AXIS_SHORT_LABELS, getAnswerLabel } from '../lib/ratingQuestions'
 
 interface DestinationSheetProps {
   destination: Destination
@@ -59,30 +60,37 @@ function formatEuro(value: number) {
   return `${Math.round(value).toLocaleString('en-US')} EUR`
 }
 
-// Ressenti (vibeBoost) et recommandation (retourBonus) du wizard : capturés mais
-// historiquement jamais affichés. On les surface en pills légers dans le hero.
+// Accueil (vibeBoost), verdict (retourBonus) et retour (returnIntent) du
+// wizard, affichés en pastilles dans le hero. Cf. docs/notation-v2.md.
 type HeroPill = { emoji: string; label: string; tone: 'positive' | 'neutral' | 'negative' }
 
 function getFeelingPill(destination: Destination): HeroPill | null {
   const v = destination.vibeBoost
   if (typeof v !== 'number') return null
-  if (v >= 5) return { emoji: '🥰', label: t('Felt great', 'On s\'y sentait super bien'), tone: 'positive' }
-  if (v >= 4) return { emoji: '👍', label: t('Good vibe', 'Bonne vibe'), tone: 'positive' }
-  if (v >= 3) return { emoji: '🥶', label: t('A bit cold', 'Accueil un peu froid'), tone: 'neutral' }
-  return { emoji: '⚠️', label: t('Not at ease', 'Pas serein·e'), tone: 'negative' }
+  if (v >= 5) return { emoji: '🥰', label: t('Lovely people', 'Des gens adorables'), tone: 'positive' }
+  if (v >= 4) return { emoji: '👍', label: t('Good vibe', 'Bonne ambiance'), tone: 'positive' }
+  if (v >= 3) return null
+  if (v >= 2) return { emoji: '🥶', label: t('People a bit cold', 'Accueil plutôt froid'), tone: 'neutral' }
+  return { emoji: '⚠️', label: t('Didn\'t feel safe', 'Pas en sécurité'), tone: 'negative' }
 }
 
 function getRecoPill(destination: Destination): HeroPill | null {
   const v = destination.retourBonus
   if (typeof v !== 'number') return null
-  if (v >= 0.3) return { emoji: '💌', label: t('Recommends', 'À recommander'), tone: 'positive' }
-  if (v >= 0.1) return { emoji: '✈️', label: t('Reco, specific trip', 'Reco, séjour précis'), tone: 'positive' }
-  if (v <= -0.3) return { emoji: '🚫', label: t('Would not reco', 'Pas recommandé'), tone: 'negative' }
-  return { emoji: '🌍', label: t('Not a priority', 'Pas en priorité'), tone: 'neutral' }
+  if (v >= 0.3) return { emoji: '💌', label: t('Go for it', 'Fonce'), tone: 'positive' }
+  if (v >= 0.1) return { emoji: '👍', label: t('Worth it', 'Ça vaut le coup'), tone: 'positive' }
+  if (v <= -0.3) return { emoji: '🙅', label: t('Skip it', 'À éviter'), tone: 'negative' }
+  return { emoji: '🤷', label: t('There\'s better', 'Il y a mieux'), tone: 'neutral' }
+}
+
+function getReturnPill(destination: Destination): HeroPill | null {
+  if (destination.returnIntent === 'tomorrow') return { emoji: '🛫', label: t('Would go back tomorrow', 'Y retournerait demain'), tone: 'positive' }
+  if (destination.returnIntent === 'once') return { emoji: '✅', label: t('Once was enough', 'Une fois suffit'), tone: 'neutral' }
+  return null
 }
 
 function getFeelingRecoPills(destination: Destination): HeroPill[] {
-  return [getFeelingPill(destination), getRecoPill(destination)].filter((p): p is HeroPill => p !== null)
+  return [getRecoPill(destination), getReturnPill(destination), getFeelingPill(destination)].filter((p): p is HeroPill => p !== null)
 }
 
 type ContextDetail =
@@ -222,12 +230,17 @@ function getDestinationContext(destination: Destination) {
 type CriterionKey = 'food' | 'night' | 'culture' | 'nature' | 'value' | 'ease'
 
 const CRITERION_LABELS: Record<CriterionKey, string> = {
-  food: t('Food & Gastronomy', 'Food & Gastronomie'),
-  night: t('Nightlife', 'Vie nocturne'),
-  culture: t('Culture & History', 'Culture & Histoire'),
-  nature: t('Nature & Scenery', 'Nature & Paysages'),
-  value: t('Value for money', 'Rapport qualité-prix'),
-  ease: t('Ease on-site', 'Facilité sur place'),
+  food: AXIS_SHORT_LABELS.food,
+  night: AXIS_SHORT_LABELS.night,
+  culture: AXIS_SHORT_LABELS.culture,
+  nature: AXIS_SHORT_LABELS.nature,
+  value: AXIS_SHORT_LABELS.value,
+  ease: AXIS_SHORT_LABELS.ease,
+}
+
+/** Réponse choisie dans le wizard, ou la note pour les données antérieures à la v2. */
+function formatCriterionValue(key: CriterionKey, value: number) {
+  return getAnswerLabel(key, value) ?? Number(value).toFixed(1).replace('.', ',')
 }
 
 const CRITERION_ICONS: Record<CriterionKey, string> = {
@@ -345,9 +358,10 @@ function getCompareTags(destination: Destination, compareDestination: Destinatio
 
 
 function formatScore(destination: Destination) {
+  if (!getDestinationTier(destination)) return '–'
   return getDestinationScore(destination)
     .toFixed(1)
-    .replace('.', ',')
+    .replace('.', t('.', ','))
 }
 
 function getDisplayTier(destination: Destination) {
@@ -759,7 +773,7 @@ function DestinationCardContent({
         {destination.image && (
           <HeroImage src={destination.image} />
         )}
-        <span className={`tier-orb destination-hero-badge tier-${displayTier.toLowerCase()}`}>{displayTier}</span>
+        <span className={`tier-orb destination-hero-badge tier-${displayTier ? displayTier.toLowerCase() : 'unrated'}`}>{displayTier ?? '?'}</span>
         <div className="destination-hero-overlay">
         <h2 className="destination-hero-title">
           {destination.name}{destination.country && destination.country !== destination.name ? `, ${destination.country}` : ''}
@@ -794,6 +808,16 @@ function DestinationCardContent({
       {cardActions}
       </div>
       <div className="destination-body-sheet">
+      {!displayTier && canEditOwnDestination && (
+        <button type="button" className="wizard-submit sheet-rate-cta" onClick={() => onEdit(destination)}>
+          {t('Rate this trip', 'Noter ce voyage')}
+        </button>
+      )}
+      {destination.memoryNote && (
+        <p className="destination-memory-note">
+          {t(`"${destination.memoryNote}"`, `« ${destination.memoryNote} »`)}
+        </p>
+      )}
       {compareWith && (
         <section className="sheet-compare-banner" aria-label={t('Comparison in progress', 'Comparaison en cours')}>
           <div className="sheet-compare-banner-copy">
@@ -1076,7 +1100,7 @@ function DestinationCardContent({
           })()}
         </>
       )}
-      <h3 className="card-section-label card-section-title">{t('Ratings by criterion', 'Notes par critère')}</h3>
+      {(criteria.length > 0 || compareWith) && <h3 className="card-section-label card-section-title">{t('Your answers', 'Tes réponses')}</h3>}
       {compareWith && compareCriteria.length > 0 ? (
         <div className="compare-ratings" aria-label={t(`Comparison with ${compareWith.friend.displayName}`, `Comparaison avec ${compareWith.friend.displayName}`)}>
           <div className="compare-ratings-head">
@@ -1112,10 +1136,10 @@ function DestinationCardContent({
       ) : (
         <div className="criteria-list">
           {criteria.map(([key, value, icon]) => (
-            <div className="criterion" key={key}>
+            <div className="criterion criterion--answer" key={key}>
               <Icon name={icon} />
               <span>{CRITERION_LABELS[key]}</span>
-              <strong className="cr-chip cr-chip--you">{Number(value).toFixed(1).replace('.', ',')}</strong>
+              <strong className="cr-chip cr-chip--you">{formatCriterionValue(key, value)}</strong>
             </div>
           ))}
         </div>
@@ -1272,10 +1296,10 @@ function RoadTripCardContent({
       <h3>{t('Overall ratings', 'Notes globales')}</h3>
       <div className="criteria-list">
         {criteria.map(([key, value, icon]) => (
-          <div className="criterion" key={key}>
+          <div className="criterion criterion--answer" key={key}>
             <Icon name={icon} />
             <span>{CRITERION_LABELS[key]}</span>
-            <strong>{Number(value).toFixed(1).replace('.', ',')}</strong>
+            <strong>{formatCriterionValue(key, value)}</strong>
           </div>
         ))}
       </div>

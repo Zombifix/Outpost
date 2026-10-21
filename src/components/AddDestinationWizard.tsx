@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Destination, Intent, RoadTripStop, Tier } from '../types'
+import type { Destination, Intent, ReturnIntent, RoadTripStop, Tier } from '../types'
 import { TIER_COLORS } from '../data'
 import { getDestinationImage } from '../services/imageSearch'
 import { findDestinationAtLocation, findDuplicate } from '../utils/duplicates'
-import { getDestinationScore, getMaxCoupDeCoeur, scoreToTier } from '../utils'
+import { computeTierBreakdown, getMaxCoupDeCoeur, withRecalculatedScore, type TierBreakdown } from '../utils'
+import { AXIS_ICONS, AXIS_KEYS, AXIS_SHORT_LABELS, QUESTIONS, buildTierExplanation, getAnswerLabel, stripLeadingEmojiLabel, type QuestionKey } from '../lib/ratingQuestions'
 import { buildDestinationRecommendations, emptySuggestionHistoryState, pushShownSuggestions } from '../lib/destinationRecommendations'
 import { geoCentroid } from '../lib/geoCentroid'
 import { useSearchSuggestionState } from '../hooks/useSearchSuggestionState'
 import { resolveZoneGeojson } from '../lib/zoneGeometry'
-import { EXPERIENCE_TAGS, ROAD_TRIP_TAG_ID } from '../lib/experienceTags'
+import { EXCLUSIVE_TAG_PAIRS, EXPERIENCE_TAG_FAMILIES, EXPERIENCE_TAGS, MAX_EXPERIENCE_TAGS, ROAD_TRIP_TAG_ID } from '../lib/experienceTags'
 import { Icon } from './Icon'
 import { t } from '../i18n'
 
@@ -92,6 +93,9 @@ interface WizardState {
   ease: number | null
   vibeBoost: number | null
   retourBonus: number | null
+  returnIntent: ReturnIntent | null
+  memoryNote: string
+  tierAdjust: number
   intent: Intent
   visitCount: number
   tripYear: number | null
@@ -106,10 +110,8 @@ interface WizardState {
   replaceCoupDeCoeurName: string
 }
 
-// getDestinationScore et scoreToTier importés de ../utils — source unique.
-
-function computeScore(state: WizardState): number {
-  return getDestinationScore({
+function stateToRatingInput(state: WizardState): Destination {
+  return {
     name: state.name || 'Preview',
     country: state.country || 'Preview',
     lat: Number.isFinite(state.lat) ? state.lat : 0,
@@ -123,10 +125,17 @@ function computeScore(state: WizardState): number {
     ease: state.ease ?? undefined,
     vibeBoost: state.vibeBoost ?? undefined,
     retourBonus: state.retourBonus ?? undefined,
-    standoutTags: state.standoutTags.length ? state.standoutTags : undefined,
+    returnIntent: state.returnIntent ?? undefined,
+    tierAdjust: state.tierAdjust || undefined,
     coupDeCoeur: state.coupDeCoeur,
-  })
+  }
 }
+
+function computeBreakdown(state: WizardState): TierBreakdown | null {
+  return computeTierBreakdown(stateToRatingInput(state))
+}
+
+const MEMORY_NOTE_MAX = 80
 
 function normalizeNullableNumber(value: number | null | undefined) {
   return value == null ? null : value
@@ -163,6 +172,9 @@ function buildEditableSnapshot(state: WizardState, stops: RoadTripStop[]) {
     ease: normalizeNullableNumber(state.ease),
     vibeBoost: normalizeNullableNumber(state.vibeBoost),
     retourBonus: normalizeNullableNumber(state.retourBonus),
+    returnIntent: state.returnIntent ?? null,
+    memoryNote: state.memoryNote.trim(),
+    tierAdjust: state.tierAdjust,
     visitCount: state.visitCount,
     tripYear: normalizeNullableNumber(state.tripYear),
     tripDays: normalizeNullableNumber(state.tripDays),
@@ -473,144 +485,6 @@ async function searchPhoton(
   return dedupePhotonResults(ordered).slice(0, 6)
 }
 
-const QUESTIONS = [
-  {
-    key: 'food' as const,
-    question: t('🍽️ Food-wise, did you treat yourself?', '🍽️ Niveau food, tu t\'es régalé(e) ?'),
-    skipLabel: t('I didn\'t really try it →', 'Je n\'ai pas vraiment testé →'),
-    answers: [
-      { label: t('🤤 Incredible, the food made the trip', '🤤 Incroyable, la bouffe a porté le voyage'), value: 5 },
-      { label: t('😋 Really good, a few real finds', '😋 Très bon, quelques vraies découvertes'), value: 4 },
-      { label: t('😐 Fine, but nothing I\'d recommend it for', '😐 Correct, mais rien que je conseillerais pour ça'), value: 2 },
-      { label: t('😬 Disappointing or too pricey for what it was', '😬 Décevant ou trop cher pour ce que c\'était'), value: 1 },
-    ],
-  },
-  {
-    key: 'night' as const,
-    question: t('🌙 How was the nightlife?', '🌙 Le soir, ça vivait comment ?'),
-    skipLabel: t('I didn\'t go out at night →', 'Je n\'ai pas testé le soir →'),
-    answers: [
-      { label: t('🔥 Big energy, it really comes alive at night', '🔥 Grosse énergie, ça vit vraiment le soir'), value: 5 },
-      { label: t('🍻 Good vibe, bars and restos without going overboard', '🍻 Bonne vibe, bars et restos sans être l\'enfer'), value: 4 },
-      { label: t('🌙 Pretty quiet, fine for dinner but not for going out', '🌙 Plutôt calme, bien pour dîner mais pas pour sortir'), value: 2 },
-      { label: t('🛌 Dead or a pain, not much to do at night', '🛌 Mort ou pénible, pas grand-chose à faire le soir'), value: 1 },
-    ],
-  },
-  {
-    key: 'culture' as const,
-    question: t('🗺️ Sightseeing and activities — was there enough to do?', '🗺️ Niveau visites et activités, tu avais de quoi faire ?'),
-    skipLabel: t('I didn\'t do enough to say →', 'Je n\'ai pas assez testé →'),
-    answers: [
-      { label: t('📈 Way too much to do, you\'d need to come back', '📈 Trop de trucs à faire, il faudrait revenir'), value: 5 },
-      { label: t('👌 Just right for the length of the trip', '👌 Pile-poil pour la durée du séjour'), value: 4 },
-      { label: t('🚶 Did it all pretty fast, need to dig a bit', '🚶 On a vite fait le tour, faut creuser un peu'), value: 2 },
-      { label: t('🥱 Honestly, not much to do', '🥱 Franchement, pas grand-chose à faire'), value: 1 },
-    ],
-  },
-  {
-    key: 'nature' as const,
-    question: t('📸 Was the scenery worth it?', '📸 Le décor, il valait le détour ?'),
-    skipLabel: t('Not enough perspective →', 'Pas assez de recul →'),
-    answers: [
-      { label: t('😍 Wow, postcard view at every corner', '😍 Waouh, carte postale à chaque coin'), value: 5 },
-      { label: t('📷 Very pretty, several spots that stick with you', '📷 Très joli, plusieurs coins qui marquent'), value: 4 },
-      { label: t('🏙️ Fine, but not a trip for the eyes', '🏙️ Correct, mais pas un voyage pour les yeux'), value: 2 },
-      { label: t('🚧 Honestly bland, not the charm you\'d expect', '🚧 Franchement fade, pas le charme attendu'), value: 1 },
-    ],
-  },
-  {
-    key: 'value' as const,
-    question: t('💸 How was the budget on the ground?', '💸 Niveau budget sur place, ça disait quoi ?'),
-    skipLabel: t('No opinion on budget →', 'Pas d\'avis budget →'),
-    answers: [
-      { label: t('👑 Great deal, got a lot for cheap', '👑 Excellent plan, j\'ai eu beaucoup pour pas cher'), value: 5 },
-      { label: t('⚖️ Fair, prices seemed honest', '⚖️ Correct, les prix semblaient honnêtes'), value: 4 },
-      { label: t('💸 Pricey for what it was', '💸 Cher pour ce que c\'était'), value: 2 },
-      { label: t('🚨 Outrageously expensive, it weighed on the experience', '🚨 Hors de prix, ça plombait l\'expérience'), value: 1 },
-    ],
-  },
-  {
-    key: 'ease' as const,
-    question: t('🧩 Getting around — was it easy or a hassle?', '🧩 Quand tu voulais bouger, c\'était simple ou galère ?'),
-    skipLabel: t('I didn\'t move around enough →', 'Je n\'ai pas assez bougé →'),
-    answers: [
-      { label: t('📈 Super easy, I got around without a second thought', '📈 Hyper simple, je bougeais sans me prendre la tête'), value: 5 },
-      { label: t('👌 Overall simple, a few hiccups but it worked out', '👌 Globalement simple, quelques contraintes mais ça allait'), value: 4 },
-      { label: t('🗺️ Not always straightforward, I often had to adapt', '🗺️ Pas toujours évident, je devais souvent m\'adapter'), value: 2 },
-      { label: t('🚧 A hassle, getting around really limited my trip', '🚧 Galère, les déplacements limitaient vraiment mon voyage'), value: 1 },
-    ],
-  },
-  {
-    key: 'vibeBoost' as const,
-    question: t('🫶 How did you feel while you were there?', '🫶 Sur place, tu te sentais comment ?'),
-    skipLabel: t('Not enough perspective →', 'Pas assez de recul →'),
-    answers: [
-      { label: t('🥰 Really good, welcomed and at ease everywhere', '🥰 Hyper bien, accueilli(e) et à l\'aise partout'), value: 5 },
-      { label: t('👍 Good vibe, simple and no hassle', '👍 Bonne vibe, simple et sans prise de tête'), value: 4 },
-      { label: t('🥶 A bit cold or distant, but not a dealbreaker', '🥶 Un peu froid ou distant, mais pas bloquant'), value: 3 },
-      { label: t('⚠️ Sketchy or heavy, I didn\'t feel at ease', '⚠️ Craignos ou pesant, je n\'étais pas serein(e)'), value: 2 },
-    ],
-  },
-  {
-    key: 'retourBonus' as const,
-    question: t('🔁 Bottom line, would you recommend it?', '🔁 Au final, tu le recommanderais ?'),
-    skipLabel: t('I\'d rather not say →', 'Je préfère ne pas trancher →'),
-    answers: [
-      { label: t('💌 Yes, no hesitation, it\'s worth the trip', '💌 Oui, sans hésiter, ça mérite le détour'), value: 0.3 },
-      { label: t('✈️ Yes, but only for a specific kind of trip', '✈️ Oui, mais pour un type de séjour précis'), value: 0.1 },
-      { label: t('🌍 Not a priority, there\'s better to see first', '🌍 Pas en priorité, il y a mieux à voir avant'), value: 0 },
-      { label: t('🚫 No, I wouldn\'t really recommend it', '🚫 Non, je ne le recommanderais pas vraiment'), value: -0.3 },
-    ],
-  },
-]
-
-type QuestionKey = 'food' | 'night' | 'culture' | 'nature' | 'value' | 'ease' | 'vibeBoost' | 'retourBonus'
-
-const QUESTION_META: Record<QuestionKey, { emoji: string; intro: string }> = {
-  food: {
-    emoji: '🍽️',
-    intro: t('From local gems to forgettable diners: did the food make the trip?', 'Des pépites locales aux restos oubliables : est-ce que la bouffe a marqué le séjour ?'),
-  },
-  night: {
-    emoji: '🌙',
-    intro: t('Bars, restaurants, lively streets, or a town that shuts down: the energy after dark.', 'Bars, restos, rues animées ou ville qui s\'éteint : l\'énergie après la journée.'),
-  },
-  culture: {
-    emoji: '🗺️',
-    intro: t('Museums, monuments, neighborhoods, day trips, activities: was it easy to fill the days?', 'Musées, monuments, quartiers, excursions, activités : est-ce que le séjour se remplissait facilement ?'),
-  },
-  nature: {
-    emoji: '📸',
-    intro: t('Streets, light, sea, mountains, skyline, viewpoints: regardless of the sights, did the place have charm?', 'Rues, lumière, mer, montagne, skyline, points de vue : indépendamment des visites, est-ce que le lieu avait du charme ?'),
-  },
-  value: {
-    emoji: '💸',
-    intro: t('This is about how the budget felt on the ground, not an absolute truth.', 'L\'idée, c\'est ton ressenti budget sur place, pas une vérité absolue.'),
-  },
-  ease: {
-    emoji: '🧩',
-    intro: t('On foot, public transport, taxi/rideshare, scooter, or e-scooter: could you get around easily, without stress, rip-off prices, or painful rides?', 'À pied, en transports, taxi/VTC, scooter ou trottinette : est-ce que tu pouvais te déplacer facilement, sans stress, sans prix abusifs ou trajets pénibles ?'),
-  },
-  vibeBoost: {
-    emoji: '🫶',
-    intro: t('Welcome, local vibe, comfort, how safe it felt: were you at ease?', 'Accueil, vibe locale, confort, sécurité ressentie : est-ce que tu étais à l\'aise ?'),
-  },
-  retourBonus: {
-    emoji: '🔁',
-    intro: t('No need to be rational: would you send someone there?', 'Pas besoin d\'être rationnel : est-ce que tu l\'enverrais à quelqu\'un ?'),
-  },
-}
-
-function stripLeadingEmojiLabel(label: string) {
-  const parts = label.split(' ')
-  const first = parts[0]
-  const hasEmojiLead = /\p{Extended_Pictographic}/u.test(first)
-  return {
-    hasEmojiLead,
-    leadingToken: hasEmojiLead ? first : '',
-    text: hasEmojiLead ? label.slice(first.length).trim() : label,
-  }
-}
 
 const COMPANION_OPTIONS: Array<{ value: NonNullable<Destination['companions']>; label: string }> = [
   { value: 'solo', label: t('🧍 Solo', '🧍 Solo') },
@@ -620,7 +494,6 @@ const COMPANION_OPTIONS: Array<{ value: NonNullable<Destination['companions']>; 
   { value: 'travail', label: t('💻 Work', '💻 Travail') },
 ]
 
-const MAX_EXPERIENCE_TAGS = 5
 
 function getIntentFromTripTypes(tripTypes: string[]): Intent {
   if (tripTypes.includes('food')) return 'gastro'
@@ -662,16 +535,8 @@ const TIER_LABELS: Record<Tier, string> = {
   S: t('Gem', 'Pépite'),
   A: t('Great', 'Génial'),
   B: t('Nice', 'Sympa'),
-  C: t('Meh', 'Bof'),
-  D: t('Skip', 'À éviter'),
-}
-
-const TIER_EXPLANATIONS: Record<Tier, string> = {
-  S: t('A place you won\'t forget. It joins your absolute top.', 'Un endroit que tu n\'oublieras pas. Il rejoint ton top absolu.'),
-  A: t('Really good. You\'d recommend it without hesitation.', 'Vraiment bien. Tu recommanderais sans hésiter.'),
-  B: t('A good experience overall, with a few caveats.', 'Une bonne expérience dans l\'ensemble, avec quelques bémols.'),
-  C: t('Mixed. Worth the trip, but nothing exceptional.', 'Mitigé. Ça valait le déplacement, mais rien d\'exceptionnel.'),
-  D: t('Not the best memory. Better to note it down so you don\'t go back.', 'Pas le meilleur souvenir. Mieux vaut noter pour ne pas y retourner.'),
+  C: t('Mixed', 'Mitigé'),
+  D: t('Not for me', 'Pas pour moi'),
 }
 
 const DEFAULT_IMAGE = 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=900&q=85'
@@ -679,7 +544,8 @@ const AUTO_IMAGE_VERSION = 6
 
 export default function AddDestinationWizard({ onClose, onAdd, initialDestination, onUpdate, existingDestinations, coupDeCoeurDestinations = [], onDuplicateFound }: WizardProps) {
   const isEditing = !!initialDestination
-  const [step, setStep] = useState<WizardStep>(isEditing ? 'result' : 'search')
+  const isEditingRated = isEditing && typeof initialDestination.retourBonus === 'number'
+  const [step, setStep] = useState<WizardStep>(isEditing ? (isEditingRated ? 'result' : 'questions') : 'search')
   const [query, setQuery] = useState('')
   const [searchExamples, setSearchExamples] = useState<string[]>([])
   const [suggestions, setSuggestions] = useState<PhotonResult[]>([])
@@ -709,6 +575,9 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
           ease: initialDestination.ease ?? null,
           vibeBoost: initialDestination.vibeBoost ?? null,
           retourBonus: initialDestination.retourBonus ?? null,
+          returnIntent: initialDestination.returnIntent ?? null,
+          memoryNote: initialDestination.memoryNote ?? '',
+          tierAdjust: initialDestination.tierAdjust ?? 0,
           intent: initialDestination.intent,
           visitCount: initialDestination.visitCount ?? 1,
           tripYear: initialDestination.tripYear ?? null,
@@ -728,6 +597,7 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
           food: null, night: null, culture: null, nature: null, value: null,
           ease: null,
           vibeBoost: null, retourBonus: null,
+          returnIntent: null, memoryNote: '', tierAdjust: 0,
           intent: 'tourisme',
           visitCount: 1,
           tripYear: null, tripDays: null, companions: null, personalBudget: null, tripTypes: [], standout: '', standoutTags: [],
@@ -736,50 +606,17 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
   )
   const [questionIndex, setQuestionIndex] = useState(0)
   const [answeredKeys, setAnsweredKeys] = useState<Set<QuestionKey>>(() => {
-    // En mode édition, pré-marquer les questions déjà répondues pour que
-    // l'utilisateur sache où il en est et puisse naviguer sans tout re-saisir.
-    if (!initialDestination) return new Set()
-    const keys = new Set<QuestionKey>()
-    if (initialDestination.food != null) keys.add('food')
-    if (initialDestination.night != null) keys.add('night')
-    if (initialDestination.culture != null) keys.add('culture')
-    if (initialDestination.nature != null) keys.add('nature')
-    if (initialDestination.value != null) keys.add('value')
-    if (initialDestination.ease != null) keys.add('ease')
-    if (initialDestination.vibeBoost != null) keys.add('vibeBoost')
-    if (initialDestination.retourBonus != null) keys.add('retourBonus')
-    return keys
+    // En mode édition d'une destination déjà notée, toutes les questions ont
+    // été vues : les axes vides correspondent à « Pas concerné ».
+    if (!isEditingRated) return new Set()
+    return new Set(QUESTIONS.map(question => question.key))
   })
   const [skippedKeys, setSkippedKeys] = useState<Set<QuestionKey>>(() => {
-    if (!initialDestination) return new Set()
-    const keys = new Set<QuestionKey>()
-    if (initialDestination.food == null) keys.add('food')
-    if (initialDestination.night == null) keys.add('night')
-    if (initialDestination.culture == null) keys.add('culture')
-    if (initialDestination.nature == null) keys.add('nature')
-    if (initialDestination.value == null) keys.add('value')
-    if (initialDestination.ease == null) keys.add('ease')
-    if (initialDestination.vibeBoost == null) keys.add('vibeBoost')
-    if (initialDestination.retourBonus == null) keys.add('retourBonus')
-    return keys
+    if (!isEditingRated) return new Set()
+    return new Set(AXIS_KEYS.filter(key => initialDestination[key] == null))
   })
-  const [skipsUsed, setSkipsUsed] = useState(() => {
-    if (!initialDestination) return 0
-    let count = 0
-    if (initialDestination.food == null) count += 1
-    if (initialDestination.night == null) count += 1
-    if (initialDestination.culture == null) count += 1
-    if (initialDestination.nature == null) count += 1
-    if (initialDestination.value == null) count += 1
-    if (initialDestination.ease == null) count += 1
-    if (initialDestination.vibeBoost == null) count += 1
-    if (initialDestination.retourBonus == null) count += 1
-    return Math.min(2, count)
-  })
-  const finalScore = useMemo(() => computeScore(state), [state])
-  const finalTier = scoreToTier(finalScore)
-  const ratedCriteriaCount = QUESTIONS.length - skippedKeys.size
-  const skipsRemaining = Math.max(0, 2 - skipsUsed)
+  const breakdown = useMemo(() => computeBreakdown(state), [state])
+  const finalTier: Tier | null = breakdown?.tier ?? null
   const [stops, setStops] = useState<RoadTripStop[]>(
     isEditing && initialDestination.stops?.length ? initialDestination.stops : []
   )
@@ -828,6 +665,9 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
       ease: initialDestination.ease ?? null,
       vibeBoost: initialDestination.vibeBoost ?? null,
       retourBonus: initialDestination.retourBonus ?? null,
+      returnIntent: initialDestination.returnIntent ?? null,
+      memoryNote: initialDestination.memoryNote ?? '',
+      tierAdjust: initialDestination.tierAdjust ?? 0,
       intent: initialDestination.intent,
       visitCount: initialDestination.visitCount ?? 1,
       tripYear: initialDestination.tripYear ?? null,
@@ -1018,7 +858,6 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
     setQuestionIndex(0)
     setAnsweredKeys(new Set())
     setSkippedKeys(new Set())
-    setSkipsUsed(0)
     setStep('questions')
     if (getKindFromPhotonResult(r) === 'zone') {
       // Resolve the exact OSM selection so homonyms cannot replace the chosen island/region.
@@ -1032,7 +871,15 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
     }
   }
 
-  const answerQuestion = (key: QuestionKey, value: number | null) => {
+  const goToNextQuestion = () => {
+    if (questionIndex < QUESTIONS.length - 1) {
+      setQuestionIndex(i => i + 1)
+    } else {
+      setStep('profile')
+    }
+  }
+
+  const answerQuestion = (key: QuestionKey, value: number | ReturnIntent) => {
     setState(prev => ({ ...prev, [key]: value }))
     setAnsweredKeys(prev => new Set([...prev, key]))
     setSkippedKeys(prev => {
@@ -1041,38 +888,21 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
       next.delete(key)
       return next
     })
-    setSkipsUsed(count => {
-      const wasSkipped = skippedKeys.has(key)
-      return wasSkipped ? Math.max(0, count - 1) : count
-    })
-
-    if (questionIndex < QUESTIONS.length - 1) {
-      setQuestionIndex(i => i + 1)
-    } else {
-      setStep('profile')
-    }
+    goToNextQuestion()
   }
 
+  // « Pas concerné » : gratuit, illimité, sans effet sur le tier.
   const skipQuestion = (key: QuestionKey) => {
-    if (skipsUsed >= 2 && !skippedKeys.has(key)) return
+    const question = QUESTIONS.find(q => q.key === key)
+    if (!question?.skippable) return
     setState(prev => ({ ...prev, [key]: null }))
     setAnsweredKeys(prev => new Set([...prev, key]))
-    setSkippedKeys(prev => {
-      if (prev.has(key)) return prev
-      return new Set([...prev, key])
-    })
-    setSkipsUsed(count => (skippedKeys.has(key) ? count : Math.min(2, count + 1)))
-
-    if (questionIndex < QUESTIONS.length - 1) {
-      setQuestionIndex(i => i + 1)
-    } else {
-      setStep('profile')
-    }
+    setSkippedKeys(prev => (prev.has(key) ? prev : new Set([...prev, key])))
+    goToNextQuestion()
   }
 
-  const finishQuestionnaire = (nextState: WizardState = state) => {
-    void nextState
-    setStep('result')
+  const adjustTier = (delta: 1 | -1) => {
+    setState(prev => ({ ...prev, tierAdjust: Math.max(-1, Math.min(1, prev.tierAdjust + delta)) }))
   }
 
   const renderWizardHeading = (counterLabel?: string) => (
@@ -1124,8 +954,14 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
     if (needsCoupDeCoeurReplacement && !state.replaceCoupDeCoeurName) return
     setResolvingImage(true)
     let s = state
-    const score = computeScore(s)
-    const tier = scoreToTier(score)
+    const savedBreakdown = computeBreakdown(s)
+    if (!savedBreakdown) {
+      setResolvingImage(false)
+      return
+    }
+    const savedDestination = withRecalculatedScore(stateToRatingInput(s))
+    const tier = savedBreakdown.tier
+    const score = savedDestination.score ?? 0
     const isZone = s.kind === 'zone'
 
     // Zones: pin position must come from the *main* polygon centroid, not from
@@ -1209,9 +1045,12 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
       ease: s.ease ?? undefined,
       memorability: isEditing ? initialDestination.memorability : undefined,
       vibeBoost: s.vibeBoost ?? undefined,
-      retourBonus: answeredKeys.has('retourBonus') && !skippedKeys.has('retourBonus') ? (s.retourBonus ?? undefined) : undefined,
+      retourBonus: s.retourBonus ?? undefined,
+      returnIntent: s.returnIntent ?? undefined,
+      memoryNote: s.memoryNote.trim() ? s.memoryNote.trim().slice(0, MEMORY_NOTE_MAX) : undefined,
+      tierAdjust: s.tierAdjust || undefined,
       intent: s.intent,
-      score: Math.round(score * 10) / 10,
+      score,
       notes: isEditing ? (initialDestination.notes ?? 1) : 1,
       image: imageResult.image,
       imageProvider: imageResult.imageProvider,
@@ -1225,8 +1064,8 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
       companions: s.companions ?? undefined,
       personalBudget: Number.isFinite(s.personalBudget) ? s.personalBudget ?? undefined : undefined,
       tripTypes: s.tripTypes.length ? s.tripTypes : undefined,
-      standout: s.standoutTags[0] ? stripChipEmoji(s.standoutTags[0]) : undefined,
-      standoutTags: s.standoutTags.length ? s.standoutTags : undefined,
+      standout: undefined,
+      standoutTags: undefined,
       coupDeCoeur: s.coupDeCoeur,
       livedThere: s.livedThere,
     }
@@ -1244,7 +1083,9 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
   }
 
   const activeQuestions = QUESTIONS
-  const progressSteps: WizardStep[] = ['search', 'questions', 'profile', 'context']
+  const progressSteps: WizardStep[] = ['search', 'questions', 'profile']
+
+  const selectedTagCount = state.tripTypes.filter(id => id !== ROAD_TRIP_TAG_ID).length
 
   const toggleExperienceTag = (id: string) => {
     setState(prev => {
@@ -1252,32 +1093,43 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
         const tripTypes = prev.tripTypes.filter(item => item !== id)
         return { ...prev, tripTypes, intent: getIntentFromTripTypes(tripTypes) }
       }
-      if (prev.tripTypes.length >= MAX_EXPERIENCE_TAGS) return prev
-      const tripTypes = [...prev.tripTypes, id]
+      const counted = prev.tripTypes.filter(item => item !== ROAD_TRIP_TAG_ID).length
+      if (id !== ROAD_TRIP_TAG_ID && counted >= MAX_EXPERIENCE_TAGS) return prev
+      const excluded = EXCLUSIVE_TAG_PAIRS
+        .filter(pair => pair.includes(id))
+        .flatMap(pair => pair.filter(other => other !== id))
+      const tripTypes = [...prev.tripTypes.filter(item => !excluded.includes(item)), id]
       return { ...prev, tripTypes, intent: getIntentFromTripTypes(tripTypes) }
     })
   }
 
   const renderStayTypeFields = () => (
     <div className="wizard-context wizard-context--embedded wizard-context--tags">
-      <div className="wizard-chip-row" aria-label={t('Trip tags', 'Tags du voyage')}>
-        {EXPERIENCE_TAGS.map(tag => {
-          const isSelected = state.tripTypes.includes(tag.id)
-          const isDisabled = !isSelected && state.tripTypes.length >= MAX_EXPERIENCE_TAGS
-          return (
-            <button
-              key={tag.id}
-              type="button"
-              className={isSelected ? 'is-selected' : ''}
-              aria-pressed={isSelected}
-              disabled={isDisabled}
-              onClick={() => toggleExperienceTag(tag.id)}
-            >
-              {tag.label}
-            </button>
-          )
-        })}
-      </div>
+      {EXPERIENCE_TAG_FAMILIES.map(family => (
+        <div key={family.id} className="wizard-context-block">
+          <div className="wizard-context-heading">
+            <span>{family.label}</span>
+          </div>
+          <div className="wizard-chip-row" aria-label={family.label}>
+            {EXPERIENCE_TAGS.filter(tag => tag.family === family.id).map(tag => {
+              const isSelected = state.tripTypes.includes(tag.id)
+              const isDisabled = !isSelected && selectedTagCount >= MAX_EXPERIENCE_TAGS
+              return (
+                <button
+                  key={tag.id}
+                  type="button"
+                  className={isSelected ? 'is-selected' : ''}
+                  aria-pressed={isSelected}
+                  disabled={isDisabled}
+                  onClick={() => toggleExperienceTag(tag.id)}
+                >
+                  {tag.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   )
 
@@ -1316,8 +1168,11 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
       )
     : DURATION_UNIT_OPTIONS
 
-  const renderTripContextFields = () => (
+  const hasTripDetails = Boolean(state.tripYear || state.tripDays || state.personalBudget || state.companions)
+
+  const renderTripContextFields = (part: 'markers' | 'details') => (
     <div className="wizard-context wizard-context--embedded wizard-context--details">
+      {part === 'markers' && (
       <div className="wizard-context-block">
         <div className="wizard-context-heading">
           <span>{t('Trip markers', 'Marqueurs du voyage')}</span>
@@ -1364,7 +1219,7 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
               <span className="wizard-favorite-switch" aria-hidden="true">
                 <span>🏠</span>
               </span>
-              <span>{t('Lived there', 'A vécu là-bas')}</span>
+              <span>{t('I lived there', 'J\'y ai vécu')}</span>
             </button>
             {!state.livedThere && (
               <button
@@ -1388,7 +1243,7 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
                 <span className="wizard-favorite-switch" aria-hidden="true">
                   <span>🔥</span>
                 </span>
-                <span>{t('Revisited', 'Revisité')}</span>
+                <span>{t('Been more than once', 'Plusieurs visites')}</span>
               </button>
             )}
           </div>
@@ -1442,6 +1297,9 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
           </div>
         )}
       </div>
+      )}
+      {part === 'details' && (
+      <>
       <div className="wizard-context-block wizard-context-block--form">
         <div className="wizard-context-heading">
           <span>{t('Trip details', 'Repères du séjour')}</span>
@@ -1515,6 +1373,8 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
           ))}
         </div>
       </div>
+      </>
+      )}
     </div>
   )
 
@@ -1680,85 +1540,76 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
           </div>
         )}
 
-        {step === 'questions' && (
-          <div className="wizard-step">
-            <div className="wizard-question-shell">
-              <div className="wizard-question-meta">
-                <span className="wizard-question-step">
-                  <span className="wizard-question-dots" aria-hidden="true">
-                    {progressSteps.map((s, i) => (
-                      <span key={s} className={`wizard-dot ${step === s ? 'active' : (i < progressSteps.indexOf(step) ? 'done' : '')}`} />
-                    ))}
+        {step === 'questions' && (() => {
+          const question = activeQuestions[questionIndex]
+          const heading = stripLeadingEmojiLabel(question.question)
+          const actionCount = (questionIndex > 0 ? 1 : 0) + (question.skippable ? 1 : 0)
+          return (
+            <div className="wizard-step">
+              <div className="wizard-question-shell">
+                <div className="wizard-question-meta">
+                  <span className="wizard-question-step">
+                    <span className="wizard-question-dots" aria-hidden="true">
+                      {progressSteps.map((s, i) => (
+                        <span key={s} className={`wizard-dot ${step === s ? 'active' : (i < progressSteps.indexOf(step) ? 'done' : '')}`} />
+                      ))}
+                    </span>
+                    <span>{state.name}</span>
                   </span>
-                  <span>{state.name}</span>
-                </span>
-                <span className="wizard-question-step-count">{questionIndex + 1} / {activeQuestions.length}</span>
-              </div>
-              <div className="wizard-question-header">
-                <span className="wizard-question-title-icon" aria-hidden="true">
-                  {QUESTION_META[activeQuestions[questionIndex].key as QuestionKey].emoji}
-                </span>
-                <div className="wizard-question-copy">
-                  <h2 className="wizard-title">{stripLeadingEmojiLabel(activeQuestions[questionIndex]?.question ?? '').text}</h2>
-                  <p className="wizard-question-intro">{QUESTION_META[activeQuestions[questionIndex].key as QuestionKey].intro}</p>
+                  <span className="wizard-question-step-count">{questionIndex + 1} / {activeQuestions.length}</span>
+                </div>
+                <div className="wizard-question-header">
+                  <span className="wizard-question-title-icon" aria-hidden="true">{heading.leadingToken}</span>
+                  <div className="wizard-question-copy">
+                    <h2 className="wizard-title">{heading.text}</h2>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div className="wizard-answers">
-              {activeQuestions[questionIndex]?.answers.map((a, i) => {
-                const questionKey = activeQuestions[questionIndex].key as QuestionKey
-                const currentValue = state[questionKey as keyof WizardState]
-                const isSelected = a.value === currentValue && answeredKeys.has(questionKey) && !skippedKeys.has(questionKey)
-                const parsedLabel = stripLeadingEmojiLabel(a.label)
-                return (
-                  <button
-                    key={i}
-                    type="button"
-                    className={`wizard-answer-btn${isSelected ? ' is-selected' : ''}`}
-                    onClick={() => answerQuestion(
-                      questionKey,
-                      a.value as number | null,
-                    )}
-                  >
-                    <span className="wizard-answer-inner">
-                      <span className="wizard-answer-main">
-                        {parsedLabel.hasEmojiLead && <span className="wizard-answer-emoji" aria-hidden="true">{parsedLabel.leadingToken}</span>}
-                        <span className="wizard-answer-label">{parsedLabel.text}</span>
+              <div className="wizard-answers">
+                {question.answers.map(answer => {
+                  const isSelected = answer.value === state[question.key]
+                    && answeredKeys.has(question.key)
+                    && !skippedKeys.has(question.key)
+                  const parsedLabel = stripLeadingEmojiLabel(answer.label)
+                  return (
+                    <button
+                      key={String(answer.value)}
+                      type="button"
+                      className={`wizard-answer-btn${isSelected ? ' is-selected' : ''}`}
+                      onClick={() => answerQuestion(question.key, answer.value)}
+                    >
+                      <span className="wizard-answer-inner">
+                        <span className="wizard-answer-main">
+                          {parsedLabel.hasEmojiLead && <span className="wizard-answer-emoji" aria-hidden="true">{parsedLabel.leadingToken}</span>}
+                          <span className="wizard-answer-label">{parsedLabel.text}</span>
+                        </span>
+                        <span className="wizard-answer-chevron" aria-hidden="true">›</span>
                       </span>
-                      <span className="wizard-answer-chevron" aria-hidden="true">›</span>
-                    </span>
-                  </button>
-                )
-              })}
-            </div>
-            {activeQuestions[questionIndex] && (
-              <>
-                <div className={`wizard-question-actions${questionIndex === 0 ? ' is-single-action' : ''}`}>
+                    </button>
+                  )
+                })}
+              </div>
+              {actionCount > 0 && (
+                <div className={`wizard-question-actions${actionCount === 1 ? ' is-single-action' : ''}`}>
                   {questionIndex > 0 ? (
                     <button type="button" className="wizard-back wizard-question-nav" onClick={() => setQuestionIndex(i => i - 1)}>
                       {t('← Previous', '← Précédent')}
                     </button>
                   ) : null}
-                  <button
-                    type="button"
-                    className={`wizard-skip-link${skipsRemaining === 0 ? ' is-disabled' : ''}`}
-                    onClick={() => skipQuestion(activeQuestions[questionIndex].key as QuestionKey)}
-                    disabled={skipsRemaining === 0}
-                    aria-disabled={skipsRemaining === 0}
-                    title={skipsRemaining === 0 ? t('You\'ve already used your 2 passes for this trip.', 'Tu as déjà utilisé tes 2 passes pour ce voyage.') : undefined}
-                  >
-                    {activeQuestions[questionIndex]?.skipLabel ?? t('This criterion doesn\'t apply →', 'Ce critère ne s\'applique pas →')}
-                  </button>
+                  {question.skippable && (
+                    <button
+                      type="button"
+                      className={`wizard-skip-link${skippedKeys.has(question.key) ? ' is-selected' : ''}`}
+                      onClick={() => skipQuestion(question.key)}
+                    >
+                      {t('Doesn\'t apply →', 'Pas concerné →')}
+                    </button>
+                  )}
                 </div>
-                <p className={`wizard-skip-helper${skipsRemaining === 0 ? ' is-exhausted' : ''}`}>
-                  {skipsRemaining > 0
-                    ? t(`You have ${skipsRemaining} pass${skipsRemaining > 1 ? 'es' : ''} left out of 2 for this trip.`, `Il te reste ${skipsRemaining} passe${skipsRemaining > 1 ? 's' : ''} sur 2 pour ce voyage.`)
-                    : t('You\'ve already used both passes for this trip.', 'Tes 2 passes ont déjà été utilisées pour ce voyage.')}
-                </p>
-              </>
-            )}
-          </div>
-        )}
+              )}
+            </div>
+          )
+        })()}
 
         {step === 'profile' && (
           <div className="wizard-step">
@@ -1767,18 +1618,51 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
               <div className="wizard-profile-header">
                 <span className="wizard-profile-title-icon" aria-hidden="true">🏷️</span>
                 <div className="wizard-profile-copy">
-                  <h2 className="wizard-title">{t('Trip vibe', 'Ambiance du voyage')}</h2>
-                  <p className="wizard-profile-intro">{t('Pick a few tags to sum up the trip\'s style, the good memories, and the standout struggles.', 'Choisis quelques tags pour résumer le style du séjour, les bons souvenirs et les galères marquantes.')}</p>
+                  <h2 className="wizard-title">{t('To wrap up', 'Pour finir')}</h2>
+                  <p className="wizard-profile-intro">{t('Up to 3 tags, and a line if you feel like it.', 'Jusqu\'à 3 tags, et une phrase si tu en as envie.')}</p>
                 </div>
               </div>
               {renderStayTypeFields()}
+              <div className="wizard-context wizard-context--embedded">
+              <div className="wizard-context-block wizard-context-block--form">
+              <div className="wizard-context-grid wizard-context-grid--single">
+              <label>
+                <span>{t('What stuck with you', 'Ce que tu retiens')}</span>
+                <input
+                  value={state.memoryNote}
+                  maxLength={MEMORY_NOTE_MAX}
+                  autoComplete="off"
+                  placeholder={t('The Sunday morning market', 'Le marché du dimanche matin')}
+                  onChange={e => {
+                    const memoryNote = e.target.value.slice(0, MEMORY_NOTE_MAX)
+                    setState(prev => ({ ...prev, memoryNote }))
+                  }}
+                />
+                <small className="wizard-field-helper">{state.memoryNote.length}/{MEMORY_NOTE_MAX}</small>
+              </label>
+              </div>
+              </div>
+              </div>
+              {renderTripContextFields('markers')}
             </div>
             <div className="wizard-step-actions">
-              <button type="button" className="wizard-back" onClick={() => setStep('questions')}>
+              <button
+                type="button"
+                className="wizard-back"
+                onClick={() => {
+                  setQuestionIndex(QUESTIONS.length - 1)
+                  setStep('questions')
+                }}
+              >
                 {t('Previous', 'Précédent')}
               </button>
-              <button type="button" className="wizard-next" onClick={() => setStep('context')}>
-                {t('Continue', 'Continuer')}
+              <button
+                type="button"
+                className="wizard-next"
+                onClick={() => setStep('result')}
+                disabled={!breakdown || (needsCoupDeCoeurReplacement && !state.replaceCoupDeCoeurName)}
+              >
+                {t('See the result', 'Voir le résultat')}
               </button>
             </div>
           </div>
@@ -1791,29 +1675,21 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
               <div className="wizard-profile-header">
                 <span className="wizard-profile-title-icon" aria-hidden="true">🧳</span>
                 <div className="wizard-profile-copy">
-                  <h2 className="wizard-title">{t('Last details', 'Derniers détails')}</h2>
-                  <p className="wizard-profile-intro">{t('Just a few last useful details before saving the trip.', 'On pose juste les derniers repères utiles avant d’enregistrer le voyage.')}</p>
+                  <h2 className="wizard-title">{t('Trip details', 'Repères du séjour')}</h2>
+                  <p className="wizard-profile-intro">{t('Optional. It fills in your traveler profile.', 'Facultatif. Ça complète ton profil voyageur.')}</p>
                 </div>
               </div>
-              {renderTripContextFields()}
+              {renderTripContextFields('details')}
             </div>
             <div className="wizard-step-actions">
-              <button type="button" className="wizard-back" onClick={() => setStep(isEditing ? 'result' : 'profile')}>
-                {t('Previous', 'Précédent')}
-              </button>
-              <button
-                type="button"
-                className="wizard-next"
-                onClick={() => finishQuestionnaire()}
-                disabled={needsCoupDeCoeurReplacement && !state.replaceCoupDeCoeurName}
-              >
-                {t('Continue', 'Continuer')}
+              <button type="button" className="wizard-next" onClick={() => setStep('result')}>
+                {t('Done', 'Terminé')}
               </button>
             </div>
           </div>
         )}
 
-        {step === 'result' && (
+        {step === 'result' && breakdown && finalTier && (
           <div className="wizard-step wizard-result">
             <p className="wizard-place-name">{state.name}</p>
             <div className="wizard-result-hero">
@@ -1833,44 +1709,44 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
               </div>
             </div>
             <h2 className="wizard-title">{TIER_LABELS[finalTier]}</h2>
-            <p className="result-explanation">{TIER_EXPLANATIONS[finalTier]}</p>
-            <div className="result-score">
-              <span>{t('Overall score', 'Score global')}</span>
-              <strong>{finalScore.toFixed(1).replace('.', t('.', ','))}</strong>
-              <em>/5</em>
+            <p className="result-explanation">{buildTierExplanation(breakdown)}</p>
+            <p className="result-rated-count">{t('Not quite right?', 'Pas tout à fait ça ?')}</p>
+            <div className="wizard-result-secondary-actions result-adjust" role="group" aria-label={t('Adjust the tier', 'Ajuster le tier')}>
+              <button
+                type="button"
+                className="wizard-result-redo"
+                onClick={() => adjustTier(1)}
+                disabled={state.tierAdjust >= 1 || finalTier === 'S'}
+              >
+                <span aria-hidden="true">↑</span>
+                <span>{t('One notch up', 'Un cran au-dessus')}</span>
+              </button>
+              <button
+                type="button"
+                className="wizard-result-redo"
+                onClick={() => adjustTier(-1)}
+                disabled={state.tierAdjust <= -1 || finalTier === 'D'}
+              >
+                <span aria-hidden="true">↓</span>
+                <span>{t('One notch down', 'Un cran en dessous')}</span>
+              </button>
             </div>
-            <p className="result-rated-count">{ratedCriteriaCount}/{QUESTIONS.length} {t('criteria rated', 'critères notés')}</p>
+            {state.memoryNote.trim() && (
+              <p className="result-explanation result-memory-note">
+                {t(`"${state.memoryNote.trim()}"`, `« ${state.memoryNote.trim()} »`)}
+              </p>
+            )}
             <div className="result-axes">
-              {(['food', 'night', 'culture', 'nature', 'value', 'ease'] as const).map(axis => {
-                const raw = state[axis]
-                if (raw == null) return null
-                const val = raw
-                const label = {
-                  food: t('Food', 'Bouffe'),
-                  night: t('Nights', 'Soirées'),
-                  culture: t('Activities', 'Activités'),
-                  nature: t('Scenery', 'Cadre'),
-                  value: t('Price', 'Prix'),
-                  ease: t('Ease', 'Facilité'),
-                }[axis]
-                const icon = {
-                  food: 'utensils',
-                  night: 'martini',
-                  culture: 'temple',
-                  nature: 'mountain',
-                  value: 'coins',
-                  ease: 'calendar',
-                }[axis]
+              {AXIS_KEYS.map(axis => {
+                const label = getAnswerLabel(axis, state[axis])
+                if (!label) return null
                 return (
-                  <div key={axis} className="result-axis">
+                  <div key={axis} className="result-axis result-axis--answer">
                     <div className="result-axis-label">
-                      <Icon name={icon} />
-                      <span>{label}</span>
+                      <Icon name={AXIS_ICONS[axis]} />
+                      <span>{AXIS_SHORT_LABELS[axis]}</span>
                     </div>
-                    <div className="axis-bar">
-                      <div className="axis-fill" style={{ width: `${(val / 5) * 100}%`, background: TIER_COLORS[finalTier].pin }} />
-                    </div>
-                    <strong>{val.toFixed(1).replace('.', t('.', ','))}</strong>
+                    <strong>{label}</strong>
                   </div>
                 )
               })}
@@ -1880,32 +1756,30 @@ export default function AddDestinationWizard({ onClose, onAdd, initialDestinatio
                 ? t('Looking for a photo...', 'Recherche de la photo...')
                 : isEditing ? t('Save changes', 'Enregistrer les modifications') : t('Add to my map', 'Ajouter à ma carte')}
             </button>
-            {isEditing && (
-              <div className="wizard-result-secondary-actions">
-                <button
-                  type="button"
-                  className="wizard-result-redo"
-                  onClick={() => setStep('context')}
-                >
-                  <Icon name="edit" />
-                  <span>{t('Edit details', 'Modifier les détails')}</span>
-                </button>
+            <div className="wizard-result-secondary-actions">
+              <button
+                type="button"
+                className="wizard-result-redo"
+                onClick={() => setStep('context')}
+              >
+                <Icon name="edit" />
+                <span>{hasTripDetails ? t('Edit trip details', 'Modifier les repères du séjour') : t('Add trip details', 'Ajouter les repères du séjour')}</span>
+              </button>
+              {isEditing && (
                 <button
                   type="button"
                   className="wizard-result-redo"
                   onClick={() => {
                     setHasTriggeredRerate(true)
                     setQuestionIndex(0)
-                    // Ne pas effacer answeredKeys : les réponses déjà données
-                    // restent visibles pour que l'utilisateur sache où il en est.
                     setStep('questions')
                   }}
                 >
                   <Icon name="trash" />
                   <span>{t('Redo the rating', 'Refaire la notation')}</span>
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         )}
       </div>

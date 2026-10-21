@@ -32,8 +32,8 @@ const tierLabels: Record<Tier, string> = {
   S: t('Gem', 'Pépite'),
   A: t('Great', 'Génial'),
   B: t('Nice', 'Sympa'),
-  C: t('Meh', 'Bof'),
-  D: t('Skip', 'À éviter'),
+  C: t('Mixed', 'Mitigé'),
+  D: t('Not for me', 'Pas pour moi'),
 }
 
 type SortMode = 'score' | 'recent'
@@ -211,7 +211,19 @@ export default function TierListPanel({
     )) : (
       <span className="tier-board-collapsed-count tier-board-collapsed-count--empty">0</span>
     )
-  const tierCountChips = renderTierChips(tierCounts)
+  const unratedCount = destinations.filter(d => d.kind !== 'stop' && getDestinationTier(d) === null).length
+  const unratedChip = unratedCount > 0 ? (
+    <span
+      className="tier-board-collapsed-count tier-board-collapsed-count--empty"
+      aria-label={t(`${unratedCount} to rate`, `${unratedCount} à noter`)}
+      title={t(`${unratedCount} to rate`, `${unratedCount} à noter`)}
+    >
+      ? {unratedCount}
+    </span>
+  ) : null
+  const tierCountChips = tierCounts.length === 0 && unratedChip
+    ? unratedChip
+    : <>{renderTierChips(tierCounts)}{unratedChip}</>
   const favoriteChip = (
     <span
       className="tier-board-favorite-chip"

@@ -298,6 +298,9 @@ function normalizeDestination(value: unknown): Destination | null {
     memorability: value.memorability === undefined || value.memorability === null ? undefined : finiteNumber(value.memorability, undefined),
     vibeBoost: value.vibeBoost === undefined || value.vibeBoost === null ? undefined : finiteNumber(value.vibeBoost, undefined),
     retourBonus: value.retourBonus === undefined || value.retourBonus === null ? undefined : finiteNumber(value.retourBonus, undefined),
+    returnIntent: value.returnIntent === 'tomorrow' || value.returnIntent === 'someday' || value.returnIntent === 'once' ? value.returnIntent : undefined,
+    memoryNote: typeof value.memoryNote === 'string' && value.memoryNote.trim() ? value.memoryNote.trim().slice(0, 80) : undefined,
+    tierAdjust: value.tierAdjust === undefined || value.tierAdjust === null ? undefined : finiteNumber(value.tierAdjust, undefined),
     score: value.score === undefined ? undefined : finiteNumber(value.score, 3),
     notes: value.notes === undefined ? undefined : finiteNumber(value.notes, 1),
     stops: normalizeStops(value.stops),
@@ -2277,7 +2280,7 @@ function DestinationCard({ destination, coupDeCoeur, coupDeCoeurCount, totalDest
         )}
       </div>
       <div className="destination-title-row">
-        <span className={`tier-orb tier-${tier.toLowerCase()}`}>{tier}</span>
+        <span className={`tier-orb tier-${tier ? tier.toLowerCase() : 'unrated'}`}>{tier ?? '?'}</span>
         <div>
           <h2>{destination.name}, {destination.country}</h2>
           <div className="destination-pill-row">

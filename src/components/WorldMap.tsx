@@ -5,7 +5,7 @@ import type { Root } from 'react-dom/client'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import type { Destination, RoadTripStop, Tier } from '../types'
-import { TIER_COLORS } from '../data'
+import { TIER_COLORS, UNRATED_COLORS } from '../data'
 import { formatVisitCountLabel, getDestinationScore, getDestinationTier, getVisitCount } from '../utils'
 import { destinationNameKey } from '../utils/destinationIdentity'
 import { haversineMeters } from '../utils/duplicates'
@@ -22,12 +22,12 @@ type Proj = (ll: [number, number]) => [number, number] | null
 const MARKER_PROJ: Proj = () => [0, 0]
 
 
-function getTierColor(tier?: Tier) {
-  return tier ? TIER_COLORS[tier]?.pin : undefined
+function getTierColor(tier?: Tier | null) {
+  return tier ? TIER_COLORS[tier]?.pin : UNRATED_COLORS.pin
 }
 
 function getDestinationColor(destination: Destination) {
-  return TIER_COLORS[getDestinationTier(destination)]?.pin
+  return getTierColor(getDestinationTier(destination))
 }
 
 function isFiniteLngLat(point: { lng: number; lat: number }) {
@@ -729,27 +729,27 @@ export default function WorldMap({
     {
       tier: 'S',
       label: t('Gem', 'Pépite'),
-      description: t('An exceptional place you would gladly revisit or recommend immediately.', 'Une adresse d’exception, à refaire ou recommander les yeux fermés.'),
+      description: t("A favorite you'd send anyone to.", "Un coup de cœur où tu enverrais n'importe qui."),
     },
     {
       tier: 'A',
       label: t('Great', 'Génial'),
-      description: t('A very strong destination with only minor flaws.', 'Une très bonne destination, avec très peu de défauts.'),
+      description: t("You'd tell a friend to go for it.", "Tu dirais à un ami de foncer."),
     },
     {
       tier: 'B',
       label: t('Nice', 'Sympa'),
-      description: t('A good memory and a solid stop, even if it is not unforgettable.', 'Un bon souvenir et une étape solide, sans être inoubliable.'),
+      description: t("Worth it, without getting carried away.", "Ça vaut le coup, sans s'emballer."),
     },
     {
       tier: 'C',
-      label: t('Meh', 'Bof'),
-      description: t('Mixed feelings: okay overall, but not especially worth repeating.', 'Avis mitigé : correct, mais pas spécialement envie d’y retourner.'),
+      label: t('Mixed', 'Mitigé'),
+      description: t("Meh, there's better out there.", "Bof, il y a mieux ailleurs."),
     },
     {
       tier: 'D',
-      label: t('Skip', 'À éviter'),
-      description: t('A disappointing experience or a spot to avoid unless you have a specific reason.', 'Une expérience décevante, ou un lieu à éviter sauf raison précise.'),
+      label: t('Not for me', 'Pas pour moi'),
+      description: t("Not your thing, you'd tell people to skip it.", "Pas pour toi, tu le déconseilles."),
     },
   ] as const
 
@@ -1499,7 +1499,7 @@ const TripPinOverlay = memo(function TripPinOverlay({
               }}
             >
               <span className="map-pin-trip-thumb">
-                <span className="map-pin-trip-badge">{destinationTier}</span>
+                <span className="map-pin-trip-badge">{destinationTier ?? '?'}</span>
                 <span className="map-pin-trip-icon" aria-hidden="true">🚗</span>
               </span>
               <span className="map-pin-pill-name">{destination.name}</span>
@@ -1668,8 +1668,9 @@ const Pin = memo(function Pin({
   const destinationTier = getDestinationTier(destination)
   const color = getTierColor(destinationTier)
   if (!color) return null
-  const score = getDestinationScore(destination)
-    .toFixed(1).replace('.', ',')
+  const score = destinationTier
+    ? getDestinationScore(destination).toFixed(1).replace('.', ',')
+    : '?'
 
   // ── Zone (road trip / région)
   // Note: si zone sans étape → fall-through vers le pin standard (rendu identique
@@ -1709,7 +1710,7 @@ const Pin = memo(function Pin({
               '--pin-color': color,
               '--pin-photo': destination.image ? `url("${destination.image}")` : 'none',
             } as CSSProperties}>
-            <span className="map-pin-tier">{destinationTier}</span>
+            <span className="map-pin-tier">{destinationTier ?? '?'}</span>
             {isCoupDeCoeur && (
               <span className="map-pin-heart" aria-label={t('Favorite', 'Coup de coeur')}>
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">

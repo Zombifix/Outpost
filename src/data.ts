@@ -139,6 +139,9 @@ export const TIER_COLORS: Record<Tier, { pin: string; label: string }> = {
 
 export const TIER_ORDER: Tier[] = ['S', 'A', 'B', 'C', 'D']
 
+/** Destination pas encore notée (notation v2). */
+export const UNRATED_COLORS = { pin: '#a3acb9', label: '#6b7686' }
+
 export const CITY_COORDS: Record<string, { lat: number; lng: number }> = Object.fromEntries(
   DESTINATIONS.map(destination => [destination.name, { lat: destination.lat, lng: destination.lng }]),
 )

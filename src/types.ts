@@ -1,5 +1,7 @@
 export type Tier = 'S' | 'A' | 'B' | 'C' | 'D'
 
+export type ReturnIntent = 'tomorrow' | 'someday' | 'once'
+
 export type Intent =
   | 'city-trip'
   | 'tourisme'
@@ -61,6 +63,12 @@ export interface Destination {
   memorability?: number // legacy: conserved for rollback, no longer used by product scoring/UI
   vibeBoost?: number
   retourBonus?: number
+  /** Notation v2 : « Et toi, tu y retournerais ? » */
+  returnIntent?: ReturnIntent
+  /** Notation v2 : « Ce que tu retiens », 80 caractères au plus */
+  memoryNote?: string
+  /** Notation v2 : correction manuelle d'un cran (-1, 0, 1) */
+  tierAdjust?: number
   intent: Intent
   coupDeCoeur?: boolean
   livedThere?: boolean

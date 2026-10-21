@@ -1,4 +1,4 @@
-import type { Destination, Intent, RoadTripStop, Tier } from '../types'
+import type { Destination, Intent, ReturnIntent, RoadTripStop, Tier } from '../types'
 import { normalizeStoredTripTypes } from './experienceTags'
 
 /**
@@ -61,6 +61,9 @@ export interface DbDestinationRow {
   lived_there: boolean | null
   vibe_boost: number | null
   retour_bonus: number | null
+  return_intent?: string | null // ajouté en migration 023
+  memory_note?: string | null // ajouté en migration 023
+  tier_adjust?: number | null // ajouté en migration 023
 }
 
 /**
@@ -70,13 +73,14 @@ export interface DbDestinationRow {
  * in-flight dans useFriendDestinations).
  */
 export const DESTINATION_SELECT_COLUMNS =
-  'id, user_id, destination_key, name, country, lat, lng, tier, kind, intent, food, night, culture, nature, value, ease, memorability, score, notes, stops, extent, geojson, state, osm_value, osm_id, osm_type, country_code, image, image_provider, image_author, image_source_url, image_query, image_search_version, summary, trip_name, visit_count, trip_year, trip_days, companions, personal_budget, trip_types, standout, standout_tags, coup_de_coeur, lived_there, vibe_boost, retour_bonus' as const
+  'id, user_id, destination_key, name, country, lat, lng, tier, kind, intent, food, night, culture, nature, value, ease, memorability, score, notes, stops, extent, geojson, state, osm_value, osm_id, osm_type, country_code, image, image_provider, image_author, image_source_url, image_query, image_search_version, summary, trip_name, visit_count, trip_year, trip_days, companions, personal_budget, trip_types, standout, standout_tags, coup_de_coeur, lived_there, vibe_boost, retour_bonus, return_intent, memory_note, tier_adjust' as const
 
 const VALID_IMAGE_PROVIDERS = ['unsplash', 'pexels', 'wikivoyage', 'wikipedia', 'wikimedia', 'fallback'] as const
 const VALID_COMPANIONS = ['solo', 'couple', 'amis', 'famille', 'travail'] as const
 const VALID_TIERS = ['S', 'A', 'B', 'C', 'D'] as const
 const VALID_KINDS = ['place', 'zone', 'stop', 'stage'] as const
 const VALID_INTENTS = ['city-trip', 'tourisme', 'sorties', 'gastro', 'nature', 'travail'] as const
+const VALID_RETURN_INTENTS = ['tomorrow', 'someday', 'once'] as const
 const VALID_OSM_TYPES = ['N', 'W', 'R', 'node', 'way', 'relation'] as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -244,6 +248,11 @@ export function rowToDestination(row: DbDestinationRow): Destination {
     livedThere: row.lived_there ?? undefined,
     vibeBoost: typeof row.vibe_boost === 'number' ? row.vibe_boost : undefined,
     retourBonus: typeof row.retour_bonus === 'number' ? row.retour_bonus : undefined,
+    returnIntent: VALID_RETURN_INTENTS.includes(row.return_intent as ReturnIntent)
+      ? (row.return_intent as ReturnIntent)
+      : undefined,
+    memoryNote: typeof row.memory_note === 'string' && row.memory_note.trim() ? row.memory_note.trim() : undefined,
+    tierAdjust: typeof row.tier_adjust === 'number' ? row.tier_adjust : undefined,
   }
 }
 
@@ -299,5 +308,8 @@ export function destinationToRow(destination: Destination, userId: string): Omit
     lived_there: destination.livedThere ?? null,
     vibe_boost: destination.vibeBoost ?? null,
     retour_bonus: destination.retourBonus ?? null,
+    return_intent: destination.returnIntent ?? null,
+    memory_note: destination.memoryNote?.trim() || null,
+    tier_adjust: destination.tierAdjust ? destination.tierAdjust : null,
   }
 }

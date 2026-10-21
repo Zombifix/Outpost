@@ -46,7 +46,8 @@ Examples:
 
 Behavior:
   - dry-run by default
-  - ignores legacy memorability in score recalculation
+  - uses the v2 drawer model (docs/notation-v2.md)
+  - skips rows without a verdict
   - writes a local snapshot before any applied update
 `)
 }
@@ -55,147 +56,43 @@ function toNumberOrNull(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-function clampScore(score) {
-  return Math.min(5, Math.max(1, score))
+// Port de computeTierBreakdown / getDestinationScore (src/utils.ts), notation v2.
+// À garder synchronisé avec la version TypeScript. Cf. docs/notation-v2.md.
+const TIER_LADDER = ['D', 'C', 'B', 'A', 'S']
+const TIER_CENTER = { S: 4.75, A: 4.25, B: 3.6, C: 2.8, D: 1.7 }
+const WOW_AXES = ['culture', 'nature', 'food', 'night', 'vibe_boost']
+const FLOP_ONLY_AXES = ['ease', 'value']
+
+function shiftTier(tier, delta) {
+  const index = TIER_LADDER.indexOf(tier)
+  return TIER_LADDER[Math.max(0, Math.min(TIER_LADDER.length - 1, index + delta))]
 }
 
-function retourBonusToVerdict(rb) {
-  if (rb == null) return null
-  if (rb >= 0.3) return 5
-  if (rb >= 0.1) return 4
-  if (rb >= 0) return 2.5
-  return 1
-}
-
-function normalizeTagText(label) {
-  return label
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .replace(/\p{Extended_Pictographic}/gu, '')
-    .trim()
-}
-
-const TOURISM_FAMILY = [
-  ['surcote', -0.28],
-  ['pieges a touristes', -0.20],
-  ['trop touristique', -0.10],
-]
-
-function getCoupDeCoeurBonus(coupDeCoeur) {
-  return coupDeCoeur ? 0.22 : 0
-}
-
-function computeTagBonus(tags) {
-  let positive = 0
-  let negative = 0
-  for (const raw of tags) {
-    const t = normalizeTagText(raw)
-    if (t.includes('belle surprise')) positive += 0.15
-    else if (t.includes('facile a vivre')) positive += 0.10
-    else if (t.includes('ambiance locale')) positive += 0.08
-    else if (t.includes('pas cher')) positive += 0.12
-    else if (t.includes('ville a flaner') || t.includes('ville a flaneur')) positive += 0.08
-    else if (t.includes('beau partout')) positive += 0.10
-    else if (t.includes('patrimoine marquant')) positive += 0.10
-    else if (t.includes('craignos')) negative -= 0.45
-    else if (t.includes('trop cher')) negative -= 0.22
-    else if (t.includes('transports galere') || t.includes('transports galre')) negative -= 0.18
-  }
-
-  const tourismHits = TOURISM_FAMILY
-    .filter(([kw]) => tags.some(raw => normalizeTagText(raw).includes(kw)))
-    .map(([, malus]) => malus)
-    .sort((a, b) => a - b)
-
-  if (tourismHits.length === 1) {
-    negative += tourismHits[0]
-  } else if (tourismHits.length > 1) {
-    negative += tourismHits[0]
-    const secondary = tourismHits.slice(1).reduce((s, v) => s + v, 0)
-    negative += Math.max(-0.08, secondary)
-  }
-
-  return Math.min(0.28, positive) + Math.max(-0.55, negative)
-}
-
-function getWeakSpotCap(row, activeWeightedCount) {
-  let cap = 5
-  for (const key of ['food', 'night', 'culture', 'nature', 'value']) {
-    const value = toNumberOrNull(row[key])
+function computeTier(row) {
+  const verdict = toNumberOrNull(row.retour_bonus)
+  if (verdict === null) return null
+  const start = verdict >= 0.3 ? 'A' : verdict >= 0.1 ? 'B' : verdict >= 0 ? 'C' : 'D'
+  let points = row.coup_de_coeur ? 1 : 0
+  for (const axis of WOW_AXES) {
+    const value = toNumberOrNull(row[axis])
     if (value === null) continue
-    if (value <= 1) cap = Math.min(cap, 3.2)
-    else if (value <= 2) cap = Math.min(cap, 4.15)
+    if (value >= 5) points += 1
+    else if (value <= 1) points -= 1
   }
-  if (activeWeightedCount < 3) cap = Math.min(cap, 3.8)
-  else if (activeWeightedCount < 4) cap = Math.min(cap, 4.2)
-  return cap
-}
-
-function calculateBaseScore(row) {
-  const activeWeighted = [row.food, row.night, row.culture, row.nature, row.value]
-    .map(toNumberOrNull)
-    .filter((value) => value != null)
-  const rawWeighted = activeWeighted.length === 0
-    ? 3
-    : activeWeighted.reduce((sum, value) => sum + value, 0) / activeWeighted.length
-  const confidence = Math.min(1, activeWeighted.length / 4)
-  const weighted = 3 + (rawWeighted - 3) * confidence * 1.1
-  const neutralAxes = [row.ease]
-    .map(toNumberOrNull)
-    .filter((value) => value != null)
-  const combined = neutralAxes.length === 0
-    ? weighted
-    : (weighted * activeWeighted.length + neutralAxes.reduce((sum, value) => sum + value, 0)) / (activeWeighted.length + neutralAxes.length)
-  const withVibe = combined + ((toNumberOrNull(row.vibe_boost) ?? 3) - 3) * 0.18
-  const capped = Math.min(withVibe + (toNumberOrNull(row.retour_bonus) ?? 0), getWeakSpotCap(row, activeWeighted.length))
-  return clampScore(capped)
-}
-
-function getScoringTags(row) {
-  if (Array.isArray(row.standout_tags) && row.standout_tags.length) return row.standout_tags
-  return row.standout ? [row.standout] : []
-}
-
-function calculateScore(row) {
-  const verdictFinal = retourBonusToVerdict(toNumberOrNull(row.retour_bonus))
-  const ambianceRessentie = toNumberOrNull(row.vibe_boost)
-  const faciliteSurPlace = toNumberOrNull(row.ease)
-  const rapportQualitePrix = toNumberOrNull(row.value)
-  const baseScore = calculateBaseScore(row)
-
-  const scoringTags = getScoringTags(row)
-  let score = baseScore + getCoupDeCoeurBonus(row.coup_de_coeur) + computeTagBonus(scoringTags)
-
-  const hasCraignos = scoringTags.some(t => normalizeTagText(t).includes('craignos'))
-
-  if (
-    rapportQualitePrix !== null && rapportQualitePrix <= 2
-    && faciliteSurPlace !== null && faciliteSurPlace <= 2
-    && !row.coup_de_coeur
-    && (verdictFinal === null || verdictFinal < 4.5)
-  ) {
-    score = Math.min(score, 3.19)
+  for (const axis of FLOP_ONLY_AXES) {
+    const value = toNumberOrNull(row[axis])
+    if (value !== null && value <= 1) points -= 1
   }
-  if (hasCraignos) {
-    score = Math.min(score, 4.49)
-  }
-  if (hasCraignos && baseScore >= 2.4) {
-    score = Math.max(score, 2.4)
-  }
-  if (row.coup_de_coeur && verdictFinal !== null && verdictFinal >= 4 && ambianceRessentie !== null && ambianceRessentie >= 4 && baseScore >= 3.6) {
-    score = Math.max(score, 4.0)
-  }
-
-  return clampScore(score)
-}
-
-function scoreToTier(score) {
-  if (score >= 4.5) return 'S'
-  if (score >= 4.0) return 'A'
-  if (score >= 3.2) return 'B'
-  if (score >= 2.4) return 'C'
-  return 'D'
+  const hasKey = Boolean(row.coup_de_coeur) || row.return_intent === 'tomorrow'
+  let tier = start
+  if (points >= 2) tier = shiftTier(tier, 1)
+  else if (points <= -2) tier = shiftTier(tier, -1)
+  if (tier === 'S' && !hasKey) tier = 'A'
+  if (toNumberOrNull(row.vibe_boost) === 1 && (tier === 'S' || tier === 'A')) tier = 'B'
+  const adjust = Math.max(-1, Math.min(1, Math.round(toNumberOrNull(row.tier_adjust) ?? 0)))
+  if (adjust !== 0) tier = shiftTier(tier, adjust)
+  const score = TIER_CENTER[tier] + Math.max(-5, Math.min(5, points)) * 0.03 + (hasKey ? 0.005 : 0)
+  return { tier, score }
 }
 
 function roundScore(score) {
@@ -250,7 +147,7 @@ async function main() {
   const client = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false } })
   let query = client
     .from('destinations')
-    .select('id, user_id, name, intent, food, night, culture, nature, value, ease, vibe_boost, retour_bonus, coup_de_coeur, standout, standout_tags, score, tier, updated_at')
+    .select('id, user_id, name, food, night, culture, nature, value, ease, vibe_boost, retour_bonus, return_intent, tier_adjust, coup_de_coeur, score, tier, updated_at')
 
   if (options.id) query = query.eq('id', options.id)
   if (options.userId) query = query.eq('user_id', options.userId)
@@ -266,9 +163,11 @@ async function main() {
     return
   }
 
-  const changes = rows.map(row => {
-    const nextScore = roundScore(calculateScore(row))
-    const nextTier = scoreToTier(nextScore)
+  // Sans verdict (notation antérieure à la v2 ou remise à zéro), on ne touche pas à la ligne.
+  const changes = rows.filter(row => computeTier(row) !== null).map(row => {
+    const computed = computeTier(row)
+    const nextScore = roundScore(computed.score)
+    const nextTier = computed.tier
     return {
       ...row,
       nextScore,

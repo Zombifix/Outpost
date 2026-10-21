@@ -6,11 +6,11 @@ type MapLegendProps = {
 }
 
 const LEGEND_ITEMS = [
-  ['S', t('Exceptional', 'Exceptionnel')],
-  ['A', t('Great', 'Genial')],
-  ['B', t('Decent', 'Correct')],
-  ['C', t('Meh', 'Bof')],
-  ['D', t('Avoid', 'A eviter')],
+  ['S', t('Gem', 'Pépite')],
+  ['A', t('Great', 'Génial')],
+  ['B', t('Nice', 'Sympa')],
+  ['C', t('Mixed', 'Mitigé')],
+  ['D', t('Not for me', 'Pas pour moi')],
 ] as const
 
 export default function MapLegend({ className = '', mode = 'overlay-bottom' }: MapLegendProps) {

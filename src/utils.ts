@@ -9,61 +9,140 @@ export function getMaxCoupDeCoeur(totalDestinations: number): number {
   return Math.max(2, Math.floor((totalDestinations + 4) / 6))
 }
 
-export type WeightedRatingKey = 'food' | 'night' | 'culture' | 'nature' | 'value'
-export type NeutralRatingKey = 'ease'
-export type Ratings = Record<WeightedRatingKey, number | null> & Partial<Record<NeutralRatingKey, number | null>>
+// ─── Notation v2 : modèle des tiroirs (cf. docs/notation-v2.md) ─────────────
+//
+// 1. Le verdict (retourBonus) fixe le tiroir de départ : Fonce A, Ça vaut le
+//    coup B, Bof C, Évite D.
+// 2. Les autres réponses donnent des points : meilleure réponse +1 sur les axes
+//    qui peuvent émerveiller, pire réponse −1 sur tous les axes, coup de cœur +1.
+// 3. Bilan ≥ +2 : on monte d'un cran. Bilan ≤ −2 : on descend d'un cran.
+// 4. S demande une clé : coup de cœur ou « Demain, sans hésiter ».
+// 5. « Je ne me sentais pas en sécurité » plafonne à B.
+// 6. La correction manuelle (tierAdjust, ±1) passe en dernier.
+//
+// Encodage des réponses dans les colonnes existantes :
+//   culture (journées), nature (cadre), food (repas), night (soirées),
+//   value (budget) : 5 / 4 / 3 / 1
+//   vibeBoost (accueil) : 5 adorables / 3 rien à signaler / 2 froids / 1 insécurité
+//   ease (déplacements) : 5 simple / 3 s'adapter / 1 galère
+//   retourBonus (verdict) : 0.3 / 0.1 / 0 / -0.3
 
-const WEIGHTED_RATING_KEYS: WeightedRatingKey[] = ['food', 'night', 'culture', 'nature', 'value']
-const NEUTRAL_RATING_KEYS: NeutralRatingKey[] = ['ease']
+export const VERDICT_VALUES = { go: 0.3, worth: 0.1, meh: 0, skip: -0.3 } as const
+export const SAFETY_ISSUE_VALUE = 1
+export const BEST_ANSWER_VALUE = 5
+export const WORST_ANSWER_VALUE = 1
 
-function clampScore(score: number): number {
-  return Math.min(5, Math.max(1, score))
+const TIER_LADDER: Tier[] = ['D', 'C', 'B', 'A', 'S']
+// Centre de chaque tiroir sur l'échelle 1–5. L'écart dans le tiroir (bilan ×
+// 0,03, au plus ±0,15) ne fait jamais changer de tiroir, même arrondi à 0,1.
+const TIER_CENTER: Record<Tier, number> = { S: 4.75, A: 4.25, B: 3.6, C: 2.8, D: 1.7 }
+
+type WowAxis = 'culture' | 'nature' | 'food' | 'night' | 'vibeBoost'
+type FlopOnlyAxis = 'ease' | 'value'
+const WOW_AXES: WowAxis[] = ['culture', 'nature', 'food', 'night', 'vibeBoost']
+const FLOP_ONLY_AXES: FlopOnlyAxis[] = ['ease', 'value']
+
+export type RatingAxis = WowAxis | FlopOnlyAxis
+
+export interface TierBreakdown {
+  startTier: Tier
+  points: number
+  wows: RatingAxis[]
+  flops: RatingAxis[]
+  hasKey: boolean
+  favorite: boolean
+  safetyCap: boolean
+  computedTier: Tier
+  adjust: number
+  tier: Tier
 }
 
-function getWeakSpotCap(ratings: Ratings, activeWeightedCount: number): number {
-  let cap = 5
+function startTierFromVerdict(verdict: number): Tier {
+  if (verdict >= 0.3) return 'A'
+  if (verdict >= 0.1) return 'B'
+  if (verdict >= 0) return 'C'
+  return 'D'
+}
 
-  for (const key of WEIGHTED_RATING_KEYS) {
-    const value = ratings[key]
-    if (value === null || value === undefined) continue
+function shiftTier(tier: Tier, delta: number): Tier {
+  const index = TIER_LADDER.indexOf(tier)
+  return TIER_LADDER[Math.max(0, Math.min(TIER_LADDER.length - 1, index + delta))]
+}
 
-    if (value <= 1) cap = Math.min(cap, 3.2)
-    else if (value <= 2) cap = Math.min(cap, 4.15)
+function clampAdjust(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0
+  return Math.max(-1, Math.min(1, Math.round(value)))
+}
+
+/** Une destination est notée en v2 dès que le verdict a été donné. */
+export function hasVerdict(destination: Pick<Destination, 'retourBonus'>): boolean {
+  return typeof destination.retourBonus === 'number' && Number.isFinite(destination.retourBonus)
+}
+
+export function computeTierBreakdown(destination: Destination): TierBreakdown | null {
+  if (!hasVerdict(destination)) return null
+  const startTier = startTierFromVerdict(destination.retourBonus as number)
+  const wows: RatingAxis[] = []
+  const flops: RatingAxis[] = []
+
+  for (const axis of WOW_AXES) {
+    const value = destination[axis]
+    if (typeof value !== 'number') continue
+    if (value >= BEST_ANSWER_VALUE) wows.push(axis)
+    else if (value <= WORST_ANSWER_VALUE) flops.push(axis)
+  }
+  for (const axis of FLOP_ONLY_AXES) {
+    const value = destination[axis]
+    if (typeof value === 'number' && value <= WORST_ANSWER_VALUE) flops.push(axis)
   }
 
-  if (activeWeightedCount < 3) cap = Math.min(cap, 3.8)
-  else if (activeWeightedCount < 4) cap = Math.min(cap, 4.2)
+  const points = wows.length - flops.length + (destination.coupDeCoeur ? 1 : 0)
+  const hasKey = Boolean(destination.coupDeCoeur) || destination.returnIntent === 'tomorrow'
+  const safetyCap = destination.vibeBoost === SAFETY_ISSUE_VALUE
 
-  return cap
+  let tier = startTier
+  if (points >= 2) tier = shiftTier(tier, 1)
+  else if (points <= -2) tier = shiftTier(tier, -1)
+  if (tier === 'S' && !hasKey) tier = 'A'
+  if (safetyCap && (tier === 'S' || tier === 'A')) tier = 'B'
+  const computedTier = tier
+
+  const adjust = clampAdjust(destination.tierAdjust)
+  const finalTier = adjust === 0 ? computedTier : shiftTier(computedTier, adjust)
+
+  const favorite = Boolean(destination.coupDeCoeur)
+  return { startTier, points, wows, flops, hasKey, favorite, safetyCap, computedTier, adjust, tier: finalTier }
 }
 
-export function calculateScore(
-  ratings: Ratings,
-  intent: Intent,
-  options?: { vibeBoost?: number | null; retourBonus?: number },
-): number {
-  void intent
-  const activeWeighted = WEIGHTED_RATING_KEYS
-    .map(key => [key, ratings[key]] as const)
-    .filter((entry): entry is readonly [WeightedRatingKey, number] => (
-      entry[1] !== null && entry[1] !== undefined && Number.isFinite(entry[1])
-    ))
-  const rawWeighted = activeWeighted.length === 0
-    ? 3
-    : activeWeighted.reduce((sum, [, value]) => sum + value, 0) / activeWeighted.length
-  const confidence = Math.min(1, activeWeighted.length / 4)
-  const weighted = 3 + (rawWeighted - 3) * confidence * 1.1
-  const neutralAxes = NEUTRAL_RATING_KEYS
-    .map(key => ratings[key])
-    .filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value))
-  const combined = neutralAxes.length === 0
-    ? weighted
-    : (weighted * activeWeighted.length + neutralAxes.reduce((sum, value) => sum + value, 0)) / (activeWeighted.length + neutralAxes.length)
-  const withVibe = options && 'vibeBoost' in options
-    ? combined + ((options.vibeBoost ?? 3) - 3) * 0.18
-    : combined
-  const capped = Math.min(withVibe + (options?.retourBonus ?? 0), getWeakSpotCap(ratings, activeWeighted.length))
-  return clampScore(capped)
+/**
+ * Tier affiché. `null` = destination pas (encore) notée. Les lignes antérieures
+ * à la v2 sans verdict gardent leur tier stocké jusqu'à ce qu'on les renote.
+ */
+export function getDestinationTier(destination: Destination): Tier | null {
+  const breakdown = computeTierBreakdown(destination)
+  if (breakdown) return breakdown.tier
+  return destination.tier ?? null
+}
+
+export function isRated(destination: Destination): boolean {
+  return getDestinationTier(destination) !== null
+}
+
+/**
+ * Score numérique, utilisé pour trier dans un tiroir et pour la note du peuple.
+ * 0 = pas notée (trié en dernier).
+ */
+export function getDestinationScore(destination: Destination): number {
+  const breakdown = computeTierBreakdown(destination)
+  if (breakdown) {
+    const spread = Math.max(-5, Math.min(5, breakdown.points)) * 0.03
+    return TIER_CENTER[breakdown.tier] + spread + (breakdown.hasKey ? 0.005 : 0)
+  }
+  if (destination.tier) {
+    const stored = destination.score
+    return typeof stored === 'number' && scoreToTier(stored) === destination.tier ? stored : TIER_CENTER[destination.tier]
+  }
+  return 0
 }
 
 export function scoreToTier(score: number): Tier {
@@ -72,136 +151,6 @@ export function scoreToTier(score: number): Tier {
   if (score >= 3.2) return 'B'
   if (score >= 2.4) return 'C'
   return 'D'
-}
-
-export function calculateTier(ratings: Ratings, intent: Intent): Tier {
-  return scoreToTier(calculateScore(ratings, intent))
-}
-
-function retourBonusToVerdict(rb: number | null | undefined): number | null {
-  if (rb == null) return null
-  if (rb >= 0.3) return 5
-  if (rb >= 0.1) return 4
-  if (rb >= 0) return 2.5
-  return 1
-}
-
-function normalizeTagText(label: string): string {
-  return label
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/\p{Diacritic}/gu, '')
-    .replace(/\p{Extended_Pictographic}/gu, '')
-    .trim()
-}
-
-// Famille "tourisme négatif" : cumul plafonné au plus gros malus + max -0.08 secondaire.
-const TOURISM_FAMILY: Array<[string, number]> = [
-  ['surcote', -0.28],
-  ['pieges a touristes', -0.20],
-  ['trop touristique', -0.10],
-]
-
-function getCoupDeCoeurBonus(coupDeCoeur: boolean | undefined): number {
-  return coupDeCoeur ? 0.22 : 0
-}
-
-function computeTagBonus(tags: string[]): number {
-  let positive = 0
-  let negative = 0
-  for (const raw of tags) {
-    const t = normalizeTagText(raw)
-    if (t.includes('belle surprise')) positive += 0.15
-    else if (t.includes('facile a vivre')) positive += 0.10
-    else if (t.includes('ambiance locale')) positive += 0.08
-    else if (t.includes('pas cher')) positive += 0.12
-    else if (t.includes('ville a flaner') || t.includes('ville a flaneur')) positive += 0.08
-    else if (t.includes('beau partout')) positive += 0.10
-    else if (t.includes('patrimoine marquant')) positive += 0.10
-    else if (t.includes('craignos')) negative -= 0.45
-    else if (t.includes('trop cher')) negative -= 0.22
-    else if (t.includes('transports galere') || t.includes('transports galre')) negative -= 0.18
-    // surcote / pieges / trop touristique → famille gérée ci-dessous
-  }
-
-  const tourismHits = TOURISM_FAMILY
-    .filter(([kw]) => tags.some(raw => normalizeTagText(raw).includes(kw)))
-    .map(([, malus]) => malus)
-    .sort((a, b) => a - b)
-
-  if (tourismHits.length === 1) {
-    negative += tourismHits[0]
-  } else if (tourismHits.length > 1) {
-    negative += tourismHits[0]
-    const secondary = tourismHits.slice(1).reduce((s, v) => s + v, 0)
-    negative += Math.max(-0.08, secondary)
-  }
-
-  return Math.min(0.28, positive) + Math.max(-0.55, negative)
-}
-
-function getScoringTags(destination: Pick<Destination, 'standoutTags' | 'standout'>): string[] {
-  if (destination.standoutTags?.length) return destination.standoutTags
-  return destination.standout ? [destination.standout] : []
-}
-
-export function getDestinationScore(destination: Destination): number {
-  const verdictFinal = retourBonusToVerdict(destination.retourBonus)
-  const ambianceRessentie = destination.vibeBoost ?? null
-  const faciliteSurPlace = destination.ease ?? null
-  const rapportQualitePrix = destination.value ?? null
-  const baseScore = calculateScore({
-    food: destination.food ?? null,
-    night: destination.night ?? null,
-    culture: destination.culture ?? null,
-    nature: destination.nature ?? null,
-    value: destination.value ?? null,
-    ease: destination.ease ?? null,
-  }, destination.intent, {
-    vibeBoost: destination.vibeBoost,
-    retourBonus: destination.retourBonus ?? 0,
-  })
-  const scoringTags = getScoringTags(destination)
-  let score = baseScore + getCoupDeCoeurBonus(destination.coupDeCoeur) + computeTagBonus(scoringTags)
-
-  const hasCraignos = scoringTags.some(t => normalizeTagText(t).includes('craignos'))
-
-  // Cap: double galère (prix + logistique) sans coup de cœur ni verdict très fort → plafond C
-  if (
-    rapportQualitePrix !== null && rapportQualitePrix <= 2
-    && faciliteSurPlace !== null && faciliteSurPlace <= 2
-    && !destination.coupDeCoeur
-    && (verdictFinal === null || verdictFinal < 4.5)
-  ) {
-    score = Math.min(score, 3.19)
-  }
-
-  // Craignos peut dégrader fort, mais ne doit pas envoyer une bonne base
-  // tout en haut du classement.
-  if (hasCraignos) {
-    score = Math.min(score, 4.49)
-  }
-
-  // Floor: Craignos ne descend pas en D si le score de fond était au moins C
-  if (hasCraignos && baseScore >= 2.4) {
-    score = Math.max(score, 2.4)
-  }
-
-  // Floor: coup de cœur + ressenti fort + base déjà solide → plancher A
-  if (
-    destination.coupDeCoeur
-    && verdictFinal !== null && verdictFinal >= 4
-    && ambianceRessentie !== null && ambianceRessentie >= 4
-    && baseScore >= 3.6
-  ) {
-    score = Math.max(score, 4.0)
-  }
-
-  return clampScore(score)
-}
-
-export function getDestinationTier(destination: Destination): Tier {
-  return scoreToTier(getDestinationScore(destination))
 }
 
 export function getVisitCount(destination: Pick<Destination, 'visitCount'>): number {
@@ -216,11 +165,13 @@ export function formatVisitCountLabel(count: number, locale: 'fr' | 'en' = 'fr')
 }
 
 export function withRecalculatedScore(destination: Destination): Destination {
+  const tier = getDestinationTier(destination)
+  if (!tier) return { ...destination, score: undefined, tier: undefined }
   const score = getDestinationScore(destination)
   return {
     ...destination,
     score: Math.round(score * 10) / 10,
-    tier: scoreToTier(score),
+    tier,
   }
 }
 

@@ -14048,6 +14048,8 @@ h3.compare-insight-headline {
 .tier-orb.tier-a, .tier-dot.tier-a { background: radial-gradient(circle at 34% 24%, rgba(255, 255, 255, 0.30), transparent 30%), var(--tier-a); }
 .tier-orb.tier-b, .tier-dot.tier-b { background: radial-gradient(circle at 34% 24%, rgba(255, 255, 255, 0.30), transparent 30%), #ffc94a; }
 .tier-orb.tier-c, .tier-dot.tier-c { background: radial-gradient(circle at 34% 24%, rgba(255, 255, 255, 0.30), transparent 30%), var(--tier-c); }
+.tier-unrated { background: #a3acb9; }
+.tier-orb.tier-unrated, .tier-dot.tier-unrated { background: radial-gradient(circle at 34% 24%, rgba(255, 255, 255, 0.30), transparent 30%), #a3acb9; }
 .tier-orb.tier-d, .tier-dot.tier-d { background: radial-gradient(circle at 34% 24%, rgba(255, 255, 255, 0.30), transparent 30%), var(--tier-d); }
 
 .side-menu button {
@@ -18964,6 +18966,7 @@ h3.compare-insight-headline {
 .tier-desktop-column--b { --tier-desktop-soft: rgba(255, 201, 74, 0.18); }
 .tier-desktop-column--c { --tier-desktop-soft: rgba(97, 199, 122, 0.16); }
 .tier-desktop-column--d { --tier-desktop-soft: rgba(101, 124, 255, 0.15); }
+.tier-desktop-column--unrated { --tier-desktop-soft: rgba(163, 172, 185, 0.16); }
 
 .tier-desktop-column-header,
 .tier-desktop-column-list,
@@ -19606,3 +19609,65 @@ h3.compare-insight-headline {
     padding-bottom: 2px;
   }
 }
+
+/* ─── Notation v2 : réutilise les styles existants du wizard ────────────── */
+
+.wizard-context-grid--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.wizard-context-grid--single .wizard-field-helper {
+  justify-self: end;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.wizard-skip-link.is-selected {
+  color: var(--wizard-primary);
+}
+
+.result-adjust {
+  margin: -16px 0 24px;
+}
+
+.result-adjust .wizard-result-redo:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.result-memory-note {
+  font-style: italic;
+}
+
+.result-axis--answer {
+  grid-template-columns: 132px minmax(0, 1fr);
+}
+
+.result-axis--answer strong {
+  text-align: left;
+}
+
+.sheet-rate-cta {
+  margin: 4px 0 16px;
+}
+
+.destination-memory-note {
+  margin: 4px 0 16px;
+  color: #56637a;
+  font-size: var(--text-sm);
+  font-style: italic;
+  line-height: 1.5;
+}
+
+/* Fiche : la réponse choisie remplace la note chiffrée. */
+.criterion--answer {
+  grid-template-columns: 20px 1fr auto;
+}
+
+.criterion--answer strong {
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+/* Groupe « À noter » de la tier list (notation v2). */
+.tier-list-row-unrated { background: linear-gradient(145deg, rgba(255, 255, 255, 0.58), rgba(163, 172, 185, 0.14)); }
