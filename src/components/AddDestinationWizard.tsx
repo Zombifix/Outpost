@@ -540,7 +540,7 @@ const TIER_LABELS: Record<Tier, string> = {
 }
 
 const DEFAULT_IMAGE = 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=900&q=85'
-const AUTO_IMAGE_VERSION = 6
+const AUTO_IMAGE_VERSION = 7
 
 export default function AddDestinationWizard({ onClose, onAdd, initialDestination, onUpdate, existingDestinations, coupDeCoeurDestinations = [], onDuplicateFound }: WizardProps) {
   const isEditing = !!initialDestination

@@ -18,7 +18,7 @@ const LEGACY_STORAGE_KEY = 'triptier-destinations-v2'
 const FAKE_SEED_VERSION_KEY = 'outpost-fake-seed-version'
 const FAKE_SEED_VERSION = '3'
 const AUTO_IMAGE_FALLBACK = 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=900&q=85'
-export const AUTO_IMAGE_VERSION = 6
+export const AUTO_IMAGE_VERSION = 7
 const DEFAULT_COUP_DE_COEUR_NAMES = new Set(['Kyoto'])
 const SUPABASE_PUSH_DEBOUNCE_MS = 400
 const MAX_REMOTE_DESTINATIONS = 200
