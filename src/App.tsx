@@ -1246,15 +1246,22 @@ function AppCore({
           aria-label={accountOpen ? t('Close account', 'Fermer mon compte') : t('My account', 'Mon compte')}
           aria-expanded={accountOpen}
         >
-          <Avatar
-            avatarUrl={profileAvatarUrl}
-            fallbackUrl={profileAvatarFallbackUrl}
-            initials={avatarFallbackLabel}
-            bg={profileAvatarBg}
-            fg={profileAvatarFg}
-            className="mobile-header-avatar-face"
-            ariaHidden={true}
-          />
+          {user ? (
+            <Avatar
+              avatarUrl={profileAvatarUrl}
+              fallbackUrl={profileAvatarFallbackUrl}
+              initials={avatarFallbackLabel}
+              bg={profileAvatarBg}
+              fg={profileAvatarFg}
+              className="mobile-header-avatar-face"
+              ariaHidden={true}
+            />
+          ) : (
+            <svg viewBox="0 0 24 24" fill="none" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="8" r="4" />
+              <path d="M4 21a8 8 0 0 1 16 0" />
+            </svg>
+          )}
         </button>
       </div>
       <BottomNav

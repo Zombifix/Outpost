@@ -28,6 +28,22 @@ function rowToProfile(row: ProfileRow): PublicProfile {
   }
 }
 
+type AuthUser = NonNullable<ReturnType<typeof useAuth>['user']>
+
+/**
+ * Photo Google de l'utilisateur, y compris quand Google a ete lie apres une
+ * inscription par e-mail (app_metadata.provider reste alors 'email').
+ */
+export function getGooglePictureUrl(user: AuthUser | null | undefined): string | undefined {
+  if (!user) return undefined
+  const pick = (data: Record<string, unknown> | null | undefined) =>
+    (data?.avatar_url ?? data?.picture) as string | undefined
+  const googleIdentity = user.identities?.find(identity => identity.provider === 'google')
+  const fromIdentity = pick(googleIdentity?.identity_data)
+  if (fromIdentity) return fromIdentity
+  return user.app_metadata?.provider === 'google' ? pick(user.user_metadata) : undefined
+}
+
 /**
  * Profil public de l'utilisateur courant.
  * - `profile` est `null` si non charge OU si la ligne n'existe pas encore (premier login).
@@ -74,10 +90,7 @@ export function useMyProfile() {
     if (!supabase || !user || !profile || avatarSyncedRef.current) return
     avatarSyncedRef.current = true
 
-    const provider = user.app_metadata?.provider as string | undefined
-    const googleUrl = provider === 'google'
-      ? (user.user_metadata?.avatar_url ?? user.user_metadata?.picture) as string | undefined
-      : undefined
+    const googleUrl = getGooglePictureUrl(user)
 
     if (googleUrl && googleUrl !== profile.avatarUrl) {
       void supabase.from('public_profiles').update({ avatar_url: googleUrl }).eq('user_id', user.id).then(() => refresh())

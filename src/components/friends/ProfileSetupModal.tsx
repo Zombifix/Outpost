@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { useMyProfile } from '../../hooks/useMyProfile'
+import { getGooglePictureUrl, type useMyProfile } from '../../hooks/useMyProfile'
 import { useAuth } from '../../lib/auth'
 import { useFocusTrap } from '../../hooks/useFocusTrap'
 import { t } from '../../i18n'
@@ -53,11 +53,8 @@ export default function ProfileSetupModal({ upsert, checkHandleAvailable }: Prof
   }, [handle, checkHandleAvailable])
 
   const getAvatarUrl = (handle: string): string => {
-    const provider = user?.app_metadata?.provider as string | undefined
-    if (provider === 'google') {
-      const url = (user?.user_metadata?.avatar_url ?? user?.user_metadata?.picture) as string | undefined
-      if (url) return url
-    }
+    const url = getGooglePictureUrl(user)
+    if (url) return url
     return `https://api.dicebear.com/9.x/thumbs/svg?seed=${encodeURIComponent(handle)}`
   }
 

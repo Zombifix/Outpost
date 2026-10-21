@@ -7268,7 +7268,8 @@ h3.compare-insight-headline {
   .mobile-header-avatar-face {
     position: absolute;
     inset: 0;
-    display: block;
+    display: grid;
+    place-items: center;
     width: 100%;
     height: 100%;
     border-radius: inherit;
