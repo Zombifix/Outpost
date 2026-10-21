@@ -60,6 +60,9 @@ interface Candidate {
 }
 
 const DEFAULT_ALLOWED = ['http://localhost:5173', 'http://localhost:4173']
+// Always allowed, even when ALLOWED_ORIGINS is set: a stale secret (old Railway
+// domain) silently blocked every image lookup from the live site.
+const SITE_ORIGINS = ['https://mvggcf5azrvtt7bzmhazitzg.57.129.154.4.sslip.io']
 const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=900&q=85'
 const FAILED_RETRY_COOLDOWN_MS = 10 * 60_000
 const MIN_LANDSCAPE_RATIO = 1.15
@@ -98,7 +101,7 @@ const WIKI_USER_AGENT = 'Outpost/1.0 (https://mvggcf5azrvtt7bzmhazitzg.57.129.15
 function getAllowedOrigins(): string[] {
   const raw = Deno.env.get('ALLOWED_ORIGINS') ?? ''
   const list = raw.split(',').map(s => s.trim()).filter(Boolean)
-  return list.length ? list : DEFAULT_ALLOWED
+  return [...SITE_ORIGINS, ...(list.length ? list : DEFAULT_ALLOWED)]
 }
 
 function buildCorsHeaders(origin: string | null): Record<string, string> {
