@@ -19862,3 +19862,122 @@ html.lg-on [data-lg='panel'] {
     inset -1px -1px 0 -0.5px rgba(255, 255, 255, 0.55),
     inset 0 0 18px rgba(255, 255, 255, 0.28);
 }
+
+/* ─── Fiche destination : résumé en listes groupées (notation v2) ───────────
+   Un groupe = une carte blanche arrondie ; une ligne = icône, libellé à
+   gauche, valeur à droite ; séparateurs fins décalés après l'icône. */
+.sheet-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.sheet-group {
+  overflow: hidden;
+  border: 1px solid rgba(219, 228, 243, 0.9);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.sheet-verdict {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+}
+
+.sheet-verdict .tier-orb {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  font-size: 20px;
+}
+
+.sheet-verdict-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.sheet-verdict-copy strong {
+  font-size: 17px;
+  font-weight: var(--weight-bold);
+  line-height: 1.2;
+}
+
+.sheet-verdict-copy p {
+  margin: 0;
+  color: #5c6880;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+
+.sheet-memory-note {
+  margin: 2px 4px;
+  color: #3b4660;
+  font-size: 15px;
+  font-style: italic;
+  line-height: 1.45;
+}
+
+.sheet-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 10px 16px;
+  font-size: var(--text-sm);
+}
+
+.sheet-row + .sheet-row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 46px;
+  height: 1px;
+  background: rgba(219, 228, 243, 0.85);
+}
+
+.sheet-row svg {
+  width: 17px;
+  height: 17px;
+  color: #8390a6;
+}
+
+.sheet-row-label {
+  color: #1e2945;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.sheet-row-value {
+  justify-self: end;
+  color: #6b7686;
+  text-align: right;
+  line-height: 1.35;
+}
+
+.sheet-row-value--wow {
+  color: #2f6fe8;
+  font-weight: var(--weight-semibold);
+}
+
+.sheet-row-value--flop {
+  color: #c2415a;
+  font-weight: var(--weight-semibold);
+}
+
+.sheet-row--tags {
+  grid-template-columns: 18px minmax(0, 1fr);
+}
+
+.sheet-row--tags .sheet-row-value {
+  justify-self: start;
+  color: #1e2945;
+  text-align: left;
+}
