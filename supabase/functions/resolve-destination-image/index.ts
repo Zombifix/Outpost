@@ -63,7 +63,7 @@ const DEFAULT_ALLOWED = ['http://localhost:5173', 'http://localhost:4173']
 const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=900&q=85'
 const FAILED_RETRY_COOLDOWN_MS = 10 * 60_000
 const MIN_LANDSCAPE_RATIO = 1.15
-const TRAVEL_KEYWORDS = ['landscape', 'cityscape', 'coast', 'mountain', 'old town', 'road', 'skyline', 'architecture', 'nature', 'beach', 'desert', 'forest', 'cliff', 'landmark']
+const TRAVEL_KEYWORDS = ['landscape', 'cityscape', 'coast', 'mountain', 'old town', 'road', 'skyline', 'architecture', 'nature', 'beach', 'desert', 'forest', 'cliff', 'landmark', 'panorama', 'panoramic', 'aerial', 'view']
 const GENERIC_KEYWORDS = ['airport', 'airplane', 'plane', 'passport', 'luggage', 'suitcase', 'ticket', 'map', 'person', 'people', 'woman', 'man', 'portrait', 'flag', 'seal']
 const SEARCH_ALIASES: Record<string, string> = {
   algerie: 'Algeria',
@@ -86,6 +86,14 @@ const SEARCH_ALIASES: Record<string, string> = {
   'cote-d-azur': 'French Riviera',
   'cote d azur': 'French Riviera',
 }
+// Wikivoyage banners (Wikidata P948) are curated ~7:1 panoramas of the place itself.
+const BANNER_SCORE_BONUS = 100
+// Max distance between the destination and the Wikidata item, to reject homonyms.
+const BANNER_MAX_DISTANCE_KM = 150
+const BANNER_MAX_DISTANCE_WIDE_KM = 900
+const WIDE_OSM_VALUES = ['country', 'state', 'region', 'province', 'county', 'island', 'archipelago', 'peninsula', 'mountain_range']
+const BANNER_MAX_WIDTH = 3840
+const WIKI_USER_AGENT = 'Outpost/1.0 (https://mvggcf5azrvtt7bzmhazitzg.57.129.154.4.sslip.io)'
 
 function getAllowedOrigins(): string[] {
   const raw = Deno.env.get('ALLOWED_ORIGINS') ?? ''
@@ -155,15 +163,15 @@ function buildQueries(input: DestinationInput): string[] {
   const isZone = input.kind === 'zone'
   const queries = isZone
     ? [
-        `${nameCountry} landscape scenic`,
-        `${nameCountry} travel landscape`,
-        `${name} nature landscape`,
+        `${nameCountry} panorama landscape`,
+        `${nameCountry} aerial view`,
+        `${name} scenic landscape`,
         `${nameCountry} road trip`,
       ]
     : [
-        `${nameCountry} travel landmark`,
-        `${nameCountry} city view`,
-        `${nameCountry} architecture landscape`,
+        `${nameCountry} panorama`,
+        `${nameCountry} skyline aerial view`,
+        `${nameCountry} landmark`,
       ]
   const stops = input.stops?.filter(stop => stop.name?.trim()).slice(0, 2) ?? []
   if (isZone && stops.length >= 2) queries.splice(1, 0, `${stops.map(stop => stop.name).join(' ')} road trip`)
@@ -171,11 +179,31 @@ function buildQueries(input: DestinationInput): string[] {
   return Array.from(new Set(queries.map(query => query.replace(/\s+/g, ' ').trim()).filter(Boolean)))
 }
 
+// Whole-word matching, so "man" does not hit "Germany" and "map" does not hit "maple".
+function wordPadded(text: string): string {
+  return ` ${slugPart(text).replace(/_/g, ' ')} `
+}
+
 function textScore(text: string): number {
-  const normalized = text.toLowerCase()
-  const positive = TRAVEL_KEYWORDS.reduce((score, word) => score + (normalized.includes(word) ? 2 : 0), 0)
-  const negative = GENERIC_KEYWORDS.reduce((score, word) => score + (normalized.includes(word) ? 3 : 0), 0)
+  const padded = wordPadded(text)
+  const positive = TRAVEL_KEYWORDS.reduce((score, word) => score + (padded.includes(` ${word} `) ? 2 : 0), 0)
+  const negative = GENERIC_KEYWORDS.reduce((score, word) => score + (padded.includes(` ${word} `) ? 3 : 0), 0)
   return positive - negative
+}
+
+function significantWords(value: string): string[] {
+  return slugPart(value).split('_').filter(word => word.length >= 3)
+}
+
+// Stock banks match on loose tags: keep a photo only when its own description
+// (never our query) names the destination, or one of the road trip stops.
+function mentionsPlace(text: string, input: DestinationInput): boolean {
+  const padded = wordPadded(text)
+  const names = [input.name ?? '', searchName(input.name ?? ''), ...(input.stops ?? []).map(stop => stop.name ?? '')]
+  return names.some(name => {
+    const words = significantWords(name)
+    return words.length > 0 && words.every(word => padded.includes(` ${word} `))
+  })
 }
 
 function candidateBaseScore(width = 0, height = 1, text = ''): number {
@@ -200,7 +228,7 @@ async function fetchWithRetry(input: RequestInfo | URL, init?: RequestInit): Pro
   throw lastError instanceof Error ? lastError : new Error('fetch_failed')
 }
 
-async function searchUnsplash(query: string): Promise<Candidate[]> {
+async function searchUnsplash(query: string, input: DestinationInput): Promise<Candidate[]> {
   const key = Deno.env.get('UNSPLASH_ACCESS_KEY')?.trim()
   if (!key) return []
   const url = new URL('https://api.unsplash.com/search/photos')
@@ -220,6 +248,13 @@ async function searchUnsplash(query: string): Promise<Candidate[]> {
     const width = typeof photo.width === 'number' ? photo.width : undefined
     const height = typeof photo.height === 'number' ? photo.height : undefined
     const alt = typeof photo.alt_description === 'string' ? photo.alt_description : undefined
+    const description = typeof photo.description === 'string' ? photo.description : ''
+    const tags = Array.isArray(photo.tags)
+      ? photo.tags.map(tag => (tag as Record<string, unknown>)?.title).filter(title => typeof title === 'string').join(' ')
+      : ''
+    const location = photo.location as Record<string, unknown> | undefined
+    const locationText = [location?.name, location?.city, location?.country].filter(part => typeof part === 'string').join(' ')
+    if (!mentionsPlace(`${alt ?? ''} ${description} ${tags} ${locationText}`, input)) return []
     return [{
       imageUrl,
       imageSource: 'unsplash',
@@ -236,7 +271,7 @@ async function searchUnsplash(query: string): Promise<Candidate[]> {
   })
 }
 
-async function searchPexels(query: string): Promise<Candidate[]> {
+async function searchPexels(query: string, input: DestinationInput): Promise<Candidate[]> {
   const key = Deno.env.get('PEXELS_API_KEY')?.trim()
   if (!key) return []
   const url = new URL('https://api.pexels.com/v1/search')
@@ -254,6 +289,8 @@ async function searchPexels(query: string): Promise<Candidate[]> {
     const width = typeof photo.width === 'number' ? photo.width : undefined
     const height = typeof photo.height === 'number' ? photo.height : undefined
     const alt = typeof photo.alt === 'string' ? photo.alt : undefined
+    // The page URL slug repeats the photographer's title, e.g. /photo/aerial-view-of-lisbon-123/.
+    if (!mentionsPlace(`${alt ?? ''} ${photo.url ?? ''}`, input)) return []
     return [{
       imageUrl,
       imageSource: 'pexels',
@@ -381,17 +418,112 @@ async function searchWikimedia(query: string, input: DestinationInput): Promise<
   })
 }
 
+function distanceKm(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const rad = Math.PI / 180
+  const dLat = (bLat - aLat) * rad
+  const dLng = (bLng - aLng) * rad
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(aLat * rad) * Math.cos(bLat * rad) * Math.sin(dLng / 2) ** 2
+  return 2 * 6371 * Math.asin(Math.sqrt(h))
+}
+
+function claimValue(entity: Record<string, unknown>, property: string): unknown {
+  const claims = entity.claims as Record<string, Array<{ mainsnak?: { datavalue?: { value?: unknown } } }>> | undefined
+  return claims?.[property]?.[0]?.mainsnak?.datavalue?.value
+}
+
+async function fetchCommonsBanner(fileName: string, query: string): Promise<Candidate | null> {
+  const url = new URL('https://commons.wikimedia.org/w/api.php')
+  url.searchParams.set('action', 'query')
+  url.searchParams.set('format', 'json')
+  url.searchParams.set('titles', `File:${fileName}`)
+  url.searchParams.set('prop', 'imageinfo')
+  url.searchParams.set('iiprop', 'url|size|mime|extmetadata')
+  url.searchParams.set('iiurlwidth', String(BANNER_MAX_WIDTH))
+  const response = await fetchWithRetry(url, { headers: { 'User-Agent': WIKI_USER_AGENT } })
+  if (!response.ok) return null
+  const data = await response.json() as { query?: { pages?: Record<string, Record<string, unknown>> } }
+  const page = Object.values(data.query?.pages ?? {})[0]
+  const info = Array.isArray(page?.imageinfo) ? page.imageinfo[0] as Record<string, unknown> | undefined : undefined
+  const width = typeof info?.width === 'number' ? info.width : 0
+  const height = typeof info?.height === 'number' ? info.height : 0
+  const mime = typeof info?.mime === 'string' ? info.mime : ''
+  if (!info || !width || !height || !['image/jpeg', 'image/png', 'image/webp'].includes(mime)) return null
+  const original = typeof info.url === 'string' ? info.url : ''
+  const thumb = typeof info.thumburl === 'string' ? info.thumburl : ''
+  const imageUrl = (width <= BANNER_MAX_WIDTH ? original : thumb || original).split('?')[0]
+  if (!imageUrl) return null
+  const metadata = info.extmetadata as Record<string, { value?: string }> | undefined
+  return {
+    imageUrl,
+    imageSource: 'wikivoyage',
+    photographerName: stripHtml(metadata?.Artist?.value) ?? stripHtml(metadata?.Credit?.value),
+    sourceUrl: typeof info.descriptionurl === 'string' ? info.descriptionurl : undefined,
+    alt: typeof page.title === 'string' ? page.title.replace(/^File:/, '').replace(/\.[a-z]+$/i, '') : fileName,
+    width: width <= BANNER_MAX_WIDTH ? width : BANNER_MAX_WIDTH,
+    height: width <= BANNER_MAX_WIDTH ? height : Math.round(height * BANNER_MAX_WIDTH / width),
+    score: BANNER_SCORE_BONUS + candidateBaseScore(width, height),
+    imageQuery: query,
+  }
+}
+
+// Wikivoyage banner of the destination, found through the Wikidata item
+// linked to its Wikivoyage or Wikipedia article (property P948).
+async function searchWikivoyageBanner(input: DestinationInput): Promise<Candidate | null> {
+  const titles = Array.from(new Set([input.name?.trim() ?? '', searchName(input.name ?? '')].filter(Boolean)))
+  if (!titles.length) return null
+  const hasCoords = Number.isFinite(input.lat) && Number.isFinite(input.lng)
+  const wide = input.kind === 'zone' || WIDE_OSM_VALUES.includes(input.osmValue ?? '')
+  const maxDistance = wide ? BANNER_MAX_DISTANCE_WIDE_KM : BANNER_MAX_DISTANCE_KM
+
+  for (const site of ['enwikivoyage', 'frwikivoyage', 'enwiki', 'frwiki']) {
+    const url = new URL('https://www.wikidata.org/w/api.php')
+    url.searchParams.set('action', 'wbgetentities')
+    url.searchParams.set('format', 'json')
+    url.searchParams.set('sites', site)
+    url.searchParams.set('titles', titles.join('|'))
+    url.searchParams.set('props', 'claims')
+    url.searchParams.set('redirects', 'yes')
+    const response = await fetchWithRetry(url, { headers: { 'User-Agent': WIKI_USER_AGENT } })
+    if (!response.ok) continue
+    const data = await response.json() as { entities?: Record<string, Record<string, unknown>> }
+
+    const matches = Object.values(data.entities ?? {}).flatMap(entity => {
+      const banner = claimValue(entity, 'P948')
+      if (typeof banner !== 'string' || !banner) return []
+      const coords = claimValue(entity, 'P625') as { latitude?: number; longitude?: number } | undefined
+      const distance = hasCoords && typeof coords?.latitude === 'number' && typeof coords.longitude === 'number'
+        ? distanceKm(Number(input.lat), Number(input.lng), coords.latitude, coords.longitude)
+        : null
+      if (distance !== null && distance > maxDistance) return []
+      // An item without coordinates cannot be told apart from a homonym: skip it.
+      if (hasCoords && distance === null) return []
+      return [{ banner, distance: distance ?? 0 }]
+    }).sort((a, b) => a.distance - b.distance)
+
+    for (const match of matches) {
+      const candidate = await fetchCommonsBanner(match.banner, titles[0])
+      if (candidate) return candidate
+    }
+  }
+  return null
+}
+
 async function findBestCandidate(input: DestinationInput): Promise<Candidate | null> {
   const queries = buildQueries(input)
   const candidates: Candidate[] = []
 
+  try {
+    const banner = await searchWikivoyageBanner(input)
+    if (banner) return banner
+  } catch { /* fall back to photo banks */ }
+
   for (const query of queries) {
-    try { candidates.push(...await searchUnsplash(query)) } catch { /* try next provider */ }
+    try { candidates.push(...await searchUnsplash(query, input)) } catch { /* try next provider */ }
   }
   if (candidates.length) return candidates.sort((a, b) => b.score - a.score)[0]
 
   for (const query of queries) {
-    try { candidates.push(...await searchPexels(query)) } catch { /* try next provider */ }
+    try { candidates.push(...await searchPexels(query, input)) } catch { /* try next provider */ }
   }
   if (candidates.length) return candidates.sort((a, b) => b.score - a.score)[0]
 

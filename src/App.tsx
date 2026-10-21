@@ -8,13 +8,13 @@ import DestinationSheet from './components/DestinationSheet'
 import BottomNav from './components/BottomNav'
 import { BrandLogo } from './components/BrandLogo'
 import { Icon } from './components/Icon'
+import { HeroImage } from './components/HeroImage'
 import Nav from './components/Nav'
 import TierListPanel from './components/TierListPanel'
 import type { SaveOptions } from './components/AddDestinationWizard'
 import DuplicateFoundModal from './components/DuplicateFoundModal'
 import { findDuplicate } from './utils/duplicates'
 import { destinationNameKey, destinationNameSet } from './utils/destinationIdentity'
-import { optimizedImageUrl } from './utils/imageUrl'
 import { formatVisitCountLabel, getDestinationScore, getDestinationTier, getMaxCoupDeCoeur, getVisitCount, withRecalculatedScore } from './utils'
 import { TravelerProfileCard, TravelerProfileStrip } from './components/TravelerProfileCard'
 import ProfileSetupModal from './components/friends/ProfileSetupModal'
@@ -2234,13 +2234,7 @@ function DestinationCard({ destination, coupDeCoeur, coupDeCoeurCount, totalDest
     <aside className="destination-card" aria-label={t(`Details for ${destination.name}`, `Détail de ${destination.name}`)}>
       <div className="destination-hero">
         {destination.image && (
-          <img
-            className="destination-hero-img"
-            src={optimizedImageUrl(destination.image)}
-            alt=""
-            loading="lazy"
-            decoding="async"
-          />
+          <HeroImage src={destination.image} />
         )}
         <div className="destination-card-actions">
           <div className="floating-kebab-wrap">

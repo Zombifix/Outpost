@@ -3798,7 +3798,7 @@ h3.card-section-title {
 }
 
 .destination-sheet-body .destination-hero {
-  --hero-h: clamp(190px, 24vh, 240px);
+  --hero-h: clamp(230px, 32vh, 300px);
   border-radius: 24px 24px 0 0;
 }
 
@@ -3865,7 +3865,7 @@ h3.card-section-title {
 }
 
 .destination-hero {
-  --hero-h: clamp(200px, 26vh, 250px);
+  --hero-h: clamp(230px, 32vh, 320px);
   position: relative;
   width: 100%;
   height: var(--hero-h);
@@ -3885,6 +3885,28 @@ h3.card-section-title {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* Slow drift on photos; panoramic banners (data-panorama) pan from one end to the other. */
+@media (prefers-reduced-motion: no-preference) {
+  .destination-hero-img {
+    transform-origin: 50% 60%;
+    animation: hero-drift 26s ease-in-out infinite alternate;
+  }
+
+  .destination-hero-img[data-panorama] {
+    animation: hero-pan 60s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes hero-drift {
+  from { transform: scale(1.02); object-position: 45% 50%; }
+  to { transform: scale(1.1); object-position: 55% 50%; }
+}
+
+@keyframes hero-pan {
+  from { object-position: 0% 50%; }
+  to { object-position: 100% 50%; }
 }
 
 .destination-hero::after {
@@ -6365,11 +6387,11 @@ h3.compare-insight-headline {
   }
 
   .destination-card .destination-hero {
-    --hero-h: clamp(240px, 28vh, 270px);
+    --hero-h: clamp(260px, 34vh, 330px);
   }
 
   .destination-card.is-comparison .destination-hero {
-    --hero-h: clamp(250px, 29vh, 280px);
+    --hero-h: clamp(270px, 35vh, 340px);
   }
 
   .destination-card .destination-hero-badge {
@@ -6715,11 +6737,11 @@ h3.compare-insight-headline {
   }
 
   .destination-card .destination-hero {
-    --hero-h: clamp(260px, 30vh, 300px);
+    --hero-h: clamp(280px, 36vh, 340px);
   }
 
   .destination-card.is-comparison .destination-hero {
-    --hero-h: clamp(270px, 31vh, 300px);
+    --hero-h: clamp(290px, 37vh, 350px);
   }
 
   .destination-card .destination-hero-badge {

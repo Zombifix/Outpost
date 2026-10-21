@@ -5,8 +5,8 @@ import { useMediaQuery } from '../hooks/useMediaQuery'
 import { TIER_COLORS } from '../data'
 import { formatVisitCountLabel, getDestinationScore, getDestinationTier, getMaxCoupDeCoeur, getVisitCount } from '../utils'
 import { findDestinationAtLocation, findRoadtripStopsAtLocation } from '../utils/duplicates'
-import { optimizedImageUrl } from '../utils/imageUrl'
 import { Icon } from './Icon'
+import { HeroImage } from './HeroImage'
 import { useActivityFeed } from '../hooks/useActivityFeed'
 import { getExperienceTagLabel, ROAD_TRIP_TAG_ID } from '../lib/experienceTags'
 import { lang, t } from '../i18n'
@@ -757,13 +757,7 @@ function DestinationCardContent({
       <div className="destination-hero-wrap">
       <div className="destination-hero">
         {destination.image && (
-          <img
-            className="destination-hero-img"
-            src={optimizedImageUrl(destination.image)}
-            alt=""
-            loading="lazy"
-            decoding="async"
-          />
+          <HeroImage src={destination.image} />
         )}
         <span className={`tier-orb destination-hero-badge tier-${displayTier.toLowerCase()}`}>{displayTier}</span>
         <div className="destination-hero-overlay">
@@ -1219,13 +1213,7 @@ function RoadTripCardContent({
       <div className="destination-hero-wrap">
       <div className="destination-hero roadtrip-hero">
         {destination.image && (
-          <img
-            className="destination-hero-img"
-            src={optimizedImageUrl(destination.image)}
-            alt=""
-            loading="lazy"
-            decoding="async"
-          />
+          <HeroImage src={destination.image} />
         )}
         <div className="destination-hero-pills">
           <span className="intent-pill destination-hero-pill">
