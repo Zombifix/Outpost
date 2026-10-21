@@ -183,6 +183,15 @@ const AXIS_PLURAL: Record<AxisKey, boolean> = {
 }
 
 /** Libellé de la réponse choisie, sans l'emoji de tête. */
+/** Emoji et libellé de la réponse choisie, pour l'afficher en carte. */
+export function getAnswerParts(key: QuestionKey, value: unknown): { emoji: string; text: string } | null {
+  const question = QUESTIONS.find(q => q.key === key)
+  const answer = question?.answers.find(a => a.value === value)
+  if (!answer) return null
+  const parsed = stripLeadingEmojiLabel(answer.label)
+  return { emoji: parsed.leadingToken, text: parsed.text }
+}
+
 export function getAnswerLabel(key: QuestionKey, value: unknown): string | null {
   const question = QUESTIONS.find(q => q.key === key)
   const answer = question?.answers.find(a => a.value === value)

@@ -10,7 +10,7 @@ import { HeroImage } from './HeroImage'
 import { useActivityFeed } from '../hooks/useActivityFeed'
 import { getExperienceTagLabel, ROAD_TRIP_TAG_ID } from '../lib/experienceTags'
 import { lang, t } from '../i18n'
-import { AXIS_SHORT_LABELS, getAnswerLabel } from '../lib/ratingQuestions'
+import { AXIS_SHORT_LABELS, getAnswerParts } from '../lib/ratingQuestions'
 
 interface DestinationSheetProps {
   destination: Destination
@@ -244,9 +244,32 @@ const CRITERION_LABELS: Record<CriterionKey, string> = {
   ease: AXIS_SHORT_LABELS.ease,
 }
 
-/** Réponse choisie dans le wizard, ou la note pour les données antérieures à la v2. */
-function formatCriterionValue(key: CriterionKey, value: number) {
-  return getAnswerLabel(key, value) ?? Number(value).toFixed(1).replace('.', ',')
+// Axes qui peuvent émerveiller : leur meilleure réponse est mise en avant
+// (même règle que le calcul, cf. computeTierBreakdown dans src/utils.ts).
+const WOW_CRITERIA = new Set<CriterionKey>(['culture', 'nature', 'food', 'night', 'vibeBoost'])
+
+function AnswerTiles({ criteria }: { criteria: ReturnType<typeof getCriteria> }) {
+  return (
+    <div className="answer-tiles">
+      {criteria.map(([key, value, icon]) => {
+        const parts = getAnswerParts(key, value)
+        const tone = value >= 5 && WOW_CRITERIA.has(key) ? 'wow' : value <= 1 ? 'flop' : 'neutral'
+        return (
+          <div className={`answer-tile answer-tile--${tone}`} key={key}>
+            <span className="answer-tile-emoji" aria-hidden="true">
+              {parts?.emoji || <Icon name={icon} />}
+            </span>
+            <span className="answer-tile-body">
+              <span className="answer-tile-axis">{CRITERION_LABELS[key]}</span>
+              <strong className="answer-tile-text">
+                {parts ? parts.text : Number(value).toFixed(1).replace('.', ',')}
+              </strong>
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 const CRITERION_ICONS: Record<CriterionKey, string> = {
@@ -1141,15 +1164,7 @@ function DestinationCardContent({
           </div>
         </div>
       ) : (
-        <div className="criteria-list">
-          {criteria.map(([key, value, icon]) => (
-            <div className="criterion criterion--answer" key={key}>
-              <Icon name={icon} />
-              <span>{CRITERION_LABELS[key]}</span>
-              <strong className="cr-chip cr-chip--you">{formatCriterionValue(key, value)}</strong>
-            </div>
-          ))}
-        </div>
+        <AnswerTiles criteria={criteria} />
       )}
       {compareWith && criteria.length === 0 && (
         <p className="compare-fallback-empty">
@@ -1301,15 +1316,7 @@ function RoadTripCardContent({
       )}
 
       <h3>{t('Overall ratings', 'Notes globales')}</h3>
-      <div className="criteria-list">
-        {criteria.map(([key, value, icon]) => (
-          <div className="criterion criterion--answer" key={key}>
-            <Icon name={icon} />
-            <span>{CRITERION_LABELS[key]}</span>
-            <strong>{formatCriterionValue(key, value)}</strong>
-          </div>
-        ))}
-      </div>
+      <AnswerTiles criteria={criteria} />
 
       <section className="roadtrip-itinerary" aria-label={t('Road trip itinerary', 'Itinéraire du road trip')}>
         <div className="roadtrip-section-head">

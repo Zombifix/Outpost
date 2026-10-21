@@ -3165,13 +3165,8 @@ svg {
     inset 0 -12px 22px rgba(22, 74, 128, 0.14);
 }
 
-/* ── Shared pin badge base — all corner badges share this foundation */
-.map-pin-tier,
-.map-pin-heart,
-.map-pin-home,
-.map-pin-roadtrip,
-.pin-friend-badge,
-.pin-shared-badge {
+/* ── Corner badge base (badge ami) */
+.pin-friend-badge {
   position: absolute;
   min-width: 22px;
   height: 22px;
@@ -3189,47 +3184,72 @@ svg {
   background-clip: padding-box;
 }
 
-/* Tier — bottom-right, couleur du tier */
-.map-pin .map-pin-tier {
-  bottom: -4px;
-  right: -4px;
-  width: 22px;
-  background: var(--pin-color);
-  color: #fff;
+/* ── Capsule de verre sous la photo : tier + marqueurs (coup de coeur,
+   vécu là-bas, road trip, en commun). Remplace les pastilles en coins. */
+.map-pin-capsule {
+  position: absolute;
+  left: 50%;
+  bottom: -10px;
+  z-index: 2;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 7px 0 6px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(240, 244, 250, 0.88));
+  box-shadow:
+    0 0 0 0.5px rgba(20, 30, 60, 0.10),
+    0 5px 12px -3px rgba(20, 30, 60, 0.34),
+    inset 0 1px 0 #fff,
+    inset 0 -1px 0 rgba(20, 30, 60, 0.06);
+  color: #1f2937;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-bold);
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.map-pin-tier {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   letter-spacing: 0.02em;
 }
 
-/* Coup de coeur — top-left, blanc/rose */
-.map-pin-heart {
-  top: -4px;
-  left: -4px;
-  background: #fff;
-  color: #ff3b73;
-  box-shadow:
-    0 0 0 2px rgba(255, 59, 115, 0.20),
-    0 2px 6px rgba(27, 38, 66, 0.22);
+/* Point de couleur du tier, avec un léger halo de la même teinte */
+.map-pin-tier::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--pin-color);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
+}
+@supports (color: color-mix(in srgb, red, blue)) {
+  .map-pin-tier::before {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--pin-color) 24%, transparent);
+  }
 }
 
-/* Vécu là-bas — bottom-left, blanc/bleu (évite le chevauchement avec ami top-right) */
-.map-pin-home {
-  bottom: -4px;
-  left: -4px;
-  background: #fff;
-  color: #1B5FE8;
-  box-shadow:
-    0 0 0 2px rgba(27, 95, 232, 0.20),
-    0 2px 6px rgba(27, 38, 66, 0.22);
+.map-pin-capsule-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 11px;
+  height: 11px;
+}
+.map-pin-capsule-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
-.map-pin-roadtrip {
-  top: -4px;
-  right: -4px;
-  background: #fff;
-  color: #ef6a00;
-  box-shadow:
-    0 0 0 2px rgba(239, 106, 0, 0.18),
-    0 2px 6px rgba(27, 38, 66, 0.22);
-}
+.map-pin-heart { color: #ff3b73; }
+.map-pin-home { color: #1B5FE8; }
+.map-pin-roadtrip { color: #ef6a00; }
+.map-pin-capsule-shared { color: var(--success-dark); }
 
 .map-pin--coup-de-coeur {
   border-width: 3px;
@@ -3266,84 +3286,118 @@ svg {
     inset 0 -12px 22px rgba(22, 74, 128, 0.14);
 }
 
-/* Destination name — chip below the pin, only on hover/selected */
-/* Keep the photo pin unchanged; liquid glass is only for the label below. */
+/* Pin photo « lentille » : la photo est sertie dans un bord de verre épais
+   qui reprend ses propres couleurs, floutées et éclaircies (::after), avec un
+   reflet en haut et une ombre interne en bas posés sur la photo (::before).
+   La couleur du tier n'est plus un anneau (elle est déjà dans la capsule) :
+   elle ne sert qu'à une lueur sous le pin sélectionné.
+   Pas de backdrop-filter : la photo est opaque, rien à réfracter derrière.
+   L'ombre est composée de variables pour que chaque état n'en change qu'une. */
 .map-pin {
+  --pin-bezel: 5px;
+  --pin-rim: 0 0 0 0 transparent;
+  --pin-glow: 0 0 0 0 transparent;
+  --pin-extra: 0 0 0 0 transparent;
+  --pin-drop:
+    0 12px 24px -8px rgba(12, 22, 48, 0.52),
+    0 2px 5px rgba(12, 22, 48, 0.16);
+  --pin-inner:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -14px 20px -6px rgba(8, 16, 36, 0.30);
   overflow: visible;
   background-color: #f4f7fb;
   background-image: var(--pin-photo, none),
                     linear-gradient(135deg, #dde6f3, #f4f7fb);
   background-clip: border-box;
-  border: 3px solid #fff;
-  outline: 2px solid var(--pin-color, #5039ee);
-  outline-offset: -1px;
-  box-shadow:
-    0 8px 18px rgba(20, 30, 60, 0.22),
-    0 1px 2px rgba(20, 30, 60, 0.18);
+  border: 0;
+  outline: none;
+  /* Contexte d'empilement : le bord (::after, z-index -1) passe au-dessus du
+     fond de la photo mais sous le reflet et la capsule. */
+  isolation: isolate;
+  box-shadow: var(--pin-glow), var(--pin-rim), var(--pin-extra), var(--pin-drop), var(--pin-inner);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   filter: none;
   transition:
     transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 200ms ease,
-    border-color 160ms ease,
-    outline-width 160ms ease;
+    box-shadow 200ms ease;
 }
 
 @supports (color: color-mix(in srgb, red, blue)) {
   .map-pin {
     background-image: var(--pin-photo, none),
                       linear-gradient(135deg, color-mix(in srgb, var(--pin-color, #5039ee) 30%, #fff), #fff);
-    border-color: #fff;
-    outline-color: color-mix(in srgb, var(--pin-color, #5039ee) 65%, transparent);
   }
 }
 
-.map-pin::before,
+/* Reflet spéculaire en haut à gauche, et liseré clair à la jonction
+   photo / verre */
+.map-pin::before {
+  display: block;
+  inset: 0;
+  z-index: 1;
+  background:
+    radial-gradient(120% 62% at 30% 0%, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.08) 42%, transparent 52%);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.55);
+  mix-blend-mode: normal;
+}
+
+/* Bord de verre épais : la photo elle-même, agrandie, floutée et éclaircie,
+   réduite par un masque à un anneau qui déborde de --pin-bezel. Un liseré
+   blanc dessine l'arête extérieure, plus vive en haut où la lumière tombe. */
 .map-pin::after {
-  display: none;
+  display: block;
+  inset: calc(var(--pin-bezel) * -1);
+  z-index: -1;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.08) 45%, rgba(255, 255, 255, 0.22)),
+    var(--pin-photo, none) center / 135% no-repeat,
+    linear-gradient(135deg, #dde6f3, #f4f7fb);
+  filter: blur(4px) saturate(1.7) brightness(1.12);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.7),
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.9);
+  -webkit-mask: radial-gradient(closest-side, transparent calc(100% - var(--pin-bezel) - 2px), #000 calc(100% - var(--pin-bezel) - 1px));
+  mask: radial-gradient(closest-side, transparent calc(100% - var(--pin-bezel) - 2px), #000 calc(100% - var(--pin-bezel) - 1px));
+  transition: inset 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* Les états redéclarent box-shadow pour passer devant les anciennes règles
+   :hover / .pin-selected plus haut, de même spécificité ou plus. */
 .map-pin:hover {
-  border-color: #fff;
   filter: none;
-  box-shadow:
-    0 14px 26px rgba(20, 30, 60, 0.32),
-    0 1px 2px rgba(20, 30, 60, 0.18);
+  --pin-drop:
+    0 18px 30px -8px rgba(12, 22, 48, 0.58),
+    0 3px 7px rgba(12, 22, 48, 0.18);
+  box-shadow: var(--pin-glow), var(--pin-rim), var(--pin-extra), var(--pin-drop), var(--pin-inner);
 }
 
+/* Sélection : verre plus épais et lueur de la couleur du tier sous le pin */
 .pin-selected .map-pin {
-  outline-width: 3px;
-  outline-offset: -1px;
-  border-width: 3px;
-  box-shadow:
-    0 18px 32px rgba(20, 30, 60, 0.40),
-    0 1px 2px rgba(20, 30, 60, 0.18);
+  --pin-bezel: 7px;
+  --pin-glow: 0 16px 34px -4px rgba(80, 57, 238, 0.4);
+  --pin-drop:
+    0 22px 36px -10px rgba(12, 22, 48, 0.55),
+    0 4px 9px rgba(12, 22, 48, 0.18);
+  box-shadow: var(--pin-glow), var(--pin-rim), var(--pin-extra), var(--pin-drop), var(--pin-inner);
 }
-
-.map-pin--coup-de-coeur {
-  border-color: #fff;
-  box-shadow:
-    0 8px 18px rgba(20, 30, 60, 0.22),
-    0 1px 2px rgba(20, 30, 60, 0.18);
+@supports (color: color-mix(in srgb, red, blue)) {
+  .pin-selected .map-pin {
+    --pin-glow: 0 16px 34px -4px color-mix(in srgb, var(--pin-color, #5039ee) 62%, transparent);
+  }
 }
 
 .map-pin--revisited {
-  box-shadow:
-    0 0 0 4px rgba(255, 138, 61, 0.18),
-    0 10px 22px rgba(20, 30, 60, 0.24),
-    0 1px 2px rgba(20, 30, 60, 0.18);
+  --pin-extra: 0 0 0 calc(var(--pin-bezel) + 2.5px) rgba(255, 138, 61, 0.3);
 }
 
-.pin-selected .map-pin--coup-de-coeur {
-  box-shadow:
-    0 18px 32px rgba(20, 30, 60, 0.40),
-    0 1px 2px rgba(20, 30, 60, 0.18);
+.map-pin--compact {
+  --pin-bezel: 4px;
 }
 
 .map-pin strong {
   position: absolute;
-  top: calc(100% + 8px);
+  top: calc(100% + 18px);
   left: 50%;
   transform: translateX(-50%) translateY(2px);
   z-index: 3;
@@ -3385,11 +3439,12 @@ svg {
 .map-pin--compact {
   width: 50px;
   height: 50px;
-  border-width: 3px;
 }
-.map-pin--compact .map-pin-tier {
-  bottom: -4px;
-  right: -4px;
+.map-pin--compact .map-pin-capsule {
+  bottom: -9px;
+  height: 18px;
+  gap: 4px;
+  padding: 0 6px 0 5px;
 }
 .map-pin--compact strong { display: none; }
 
@@ -10798,27 +10853,15 @@ h3.compare-insight-headline {
 }
 
 /* ===== Friend pin variants (map) ===== */
-.map-pin--friend {
-  background-color: rgba(255, 255, 255, 0.76);
-  border: 2px solid rgba(124, 141, 181, 0.72) !important;
-  box-shadow:
-    0 0 0 4px rgba(124, 141, 181, 0.16),
-    0 17px 34px rgba(36, 72, 118, 0.20),
-    0 5px 12px rgba(16, 38, 72, 0.10),
-    inset 0 1px 2px rgba(255, 255, 255, 0.84),
-    inset 0 -12px 20px rgba(22, 74, 128, 0.10) !important;
-  color: #2a3144 !important;
-}
-
 .map-pin--friend strong,
 .map-pin--friend small {
   color: #2a3144 !important;
 }
 
+/* Pin d'un ami : même lentille, cerclée d'un fin trait ardoise autour du verre */
 .map-pin--friend {
+  --pin-rim: 0 0 0 calc(var(--pin-bezel) + 1.5px) rgba(124, 141, 181, 0.75);
   background-color: #fff;
-  border: 2px solid var(--friend-secondary) !important;
-  box-shadow: 0 0 0 4px rgba(124,141,181,0.18), 0 2px 8px rgba(0,0,0,0.08) !important;
   color: #2a3144 !important;
 }
 
@@ -10858,15 +10901,6 @@ h3.compare-insight-headline {
   background: var(--pin-badge-bg, #fff);
 }
 
-/* Partagé — top-right, vert */
-.pin-shared-badge {
-  top: -4px;
-  right: -4px;
-  width: auto;
-  border-radius: var(--radius-pill);
-  background: var(--success-dark);
-  color: #fff;
-}
 
 /* ============================================================
    FRIENDS — vue Amis + modal d'ajout
@@ -19682,22 +19716,91 @@ h3.compare-insight-headline {
   line-height: 1.5;
 }
 
-/* Fiche : la réponse choisie remplace la note chiffrée. La colonne de valeur
-   n'a plus la largeur fixe d'un chiffre ; une réponse longue passe à la ligne
-   à l'intérieur de sa pastille. */
-.criterion.criterion--answer,
-.destination-card .criterion.criterion--answer {
-  grid-template-columns: 22px auto minmax(0, 1fr);
+/* Fiche : « Tes réponses » en liste de cartes (notation v2). L'emoji de la
+   réponse à gauche, l'axe en petit au-dessus de la réponse : le texte prend
+   toute la largeur et une réponse longue passe à la ligne comme du texte. */
+.answer-tiles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.criterion.criterion--answer strong {
-  justify-self: end;
-  max-width: 100%;
-  padding: 4px 12px;
-  border-radius: 14px;
-  white-space: normal;
-  text-align: right;
+.answer-tile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid rgba(219, 228, 243, 0.9);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.answer-tile-emoji {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: rgba(238, 243, 251, 0.9);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.answer-tile-emoji svg {
+  width: 16px;
+  height: 16px;
+  color: #73809a;
+}
+
+.answer-tile-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.answer-tile-axis {
+  color: #7a869d;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.answer-tile-text {
+  color: #1e2945;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
   line-height: 1.3;
+}
+
+.answer-tile--wow {
+  border-color: rgba(59, 124, 244, 0.28);
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(222, 236, 255, 0.72));
+}
+
+.answer-tile--wow .answer-tile-emoji {
+  background: rgba(59, 124, 244, 0.12);
+}
+
+.answer-tile--wow .answer-tile-axis {
+  color: var(--wizard-primary);
+}
+
+.answer-tile--flop {
+  border-color: rgba(217, 63, 88, 0.22);
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.86), rgba(255, 234, 237, 0.7));
+}
+
+.answer-tile--flop .answer-tile-emoji {
+  background: rgba(217, 63, 88, 0.1);
+}
+
+.answer-tile--flop .answer-tile-axis {
+  color: #c2415a;
 }
 
 /* Groupe « À noter » de la tier list (notation v2). */
