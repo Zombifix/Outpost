@@ -1,4 +1,4 @@
-import { memo, useEffect, useId, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useEffect, useId, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { Root } from 'react-dom/client'
@@ -11,13 +11,75 @@ import { destinationNameKey } from '../utils/destinationIdentity'
 import { haversineMeters } from '../utils/duplicates'
 import { ROAD_TRIP_TAG_ID } from '../lib/experienceTags'
 import { t } from '../i18n'
+import SpaceBackdrop from './globe/SpaceBackdrop'
+
+// Globe 3D (Three.js), chargé seulement quand la scène « Terre 3D » est choisie.
+const EarthGlobe = lazy(() => import('./globe/EarthGlobe'))
+type GlobeCameraRequest = { lat: number; lng: number; token: number; distance?: number }
+
+// Correspondance d'échelle entre le globe 3D (caméra à `distance` rayons, champ
+// vertical de 32°) et la carte : au centre de l'écran, un rayon terrestre fait
+// 512 × 2^zoom / (2π cos lat) pixels sur la carte (formule du globe MapLibre,
+// vérifiée avec map.project) et focale / (distance − 1) sur le globe 3D. Le
+// relais se fait donc sans saut de taille, à toutes les latitudes.
+const GLOBE_FOV = 32
+const HANDOFF_ZOOM = 4.2
+// Bascules entre globe et carte, exprimées en distance de caméra du globe 3D
+// (donc en taille apparente de la Terre), identiques à toutes les latitudes ;
+// le zoom de carte correspondant en découle (≈ 3,9 et 3,6 vers 45°, plus fort à
+// l'équateur, plus faible vers les pôles). Écart entre les deux : pas de
+// va-et-vient.
+const ZOOM_THROUGH_DISTANCE = 1.9
+const RETURN_TO_GLOBE_DISTANCE = 2.1
+// Fondu du globe 3D sur la carte au relais (doit couvrir la transition CSS de
+// .earth-globe-layer) : le globe continue d'être dessiné pendant ce temps.
+const GLOBE_FADE_MS = 450
+// Arrivée sur une destination : centrée dans l'espace libre, entre la barre
+// latérale et la fiche ouverte (à droite sur ordinateur, en bas sur mobile).
+function destinationPaddingFor(map: maplibregl.Map) {
+  const container = map.getContainer().getBoundingClientRect()
+  const padding = { top: 0, right: 0, bottom: 0, left: getSidebarInset(map) }
+  const card = document.querySelector('.destination-card')?.getBoundingClientRect()
+  if (card && card.width > 0 && card.left > container.left + container.width / 2) {
+    padding.right = Math.max(0, Math.round(container.right - card.left + 16))
+  }
+  const sheet = document.querySelector('.destination-sheet')?.getBoundingClientRect()
+  if (sheet && sheet.height > 0 && sheet.top > container.top + container.height * 0.3) {
+    padding.bottom = Math.max(0, Math.round(container.bottom - sheet.top + 16))
+  }
+  return padding
+}
+function globeFocalPx(map: maplibregl.Map) {
+  return (map.getContainer().clientHeight / 2) / Math.tan((GLOBE_FOV / 2) * Math.PI / 180)
+}
+function mapRadiusPx(zoom: number, lat: number) {
+  return (512 * 2 ** zoom) / (2 * Math.PI * Math.max(0.05, Math.cos(lat * Math.PI / 180)))
+}
+function globeDistanceForZoom(map: maplibregl.Map, zoom: number, lat: number) {
+  return 1 + globeFocalPx(map) / mapRadiusPx(zoom, lat)
+}
+function zoomForGlobeDistance(map: maplibregl.Map, distance: number, lat: number) {
+  const radiusPx = globeFocalPx(map) / Math.max(0.01, distance - 1)
+  return Math.log2((radiusPx * 2 * Math.PI * Math.max(0.05, Math.cos(lat * Math.PI / 180))) / 512)
+}
 
 const MAPTILER_KEY = 'aETkeQlWzYNolMJrUTIx'
 const STYLE_URL = `https://api.maptiler.com/maps/outdoor-v2/style.json?key=${MAPTILER_KEY}`
 const INIT_CENTER: [number, number] = [10, 10]
 const INIT_ZOOM = 1.5
-const AUTO_FIT_MAX_ZOOM = 5.6
-const PIN_FOCUS_INSET = 92
+// Plan « orbital » en vue globe : caméra plongeante et Terre légèrement penchée.
+// Elle se redresse (nord en haut, vue de dessus) une fois zoomé sur une région.
+const CINEMATIC_CAMERA = { bearing: -10, pitch: 20 }
+const FLAT_CAMERA = { bearing: 0, pitch: 0 }
+
+// Part de la pose cinématique selon le zoom : entière jusqu'au zoom 3, nulle à
+// partir de 5,5, en courbe douce entre les deux. Appliquée à chaque image de
+// caméra (transformCameraUpdate) : la caméra se redresse pendant le zoom même,
+// jamais après coup.
+function cinematicAmount(zoom: number) {
+  const t = Math.min(1, Math.max(0, (5.5 - zoom) / 2.5))
+  return t * t * (3 - 2 * t)
+}
 type Proj = (ll: [number, number]) => [number, number] | null
 const MARKER_PROJ: Proj = () => [0, 0]
 
@@ -75,49 +137,206 @@ function getMapFocusFingerprint(destinations: Destination[], friendDestinations?
     .join('|')
 }
 
-function visibleRect(element: Element | null) {
-  if (!(element instanceof HTMLElement)) return null
-  const style = element.ownerDocument.defaultView?.getComputedStyle(element)
-  if (!style || style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return null
-  const rect = element.getBoundingClientRect()
-  if (rect.width <= 0 || rect.height <= 0) return null
-  return rect
+// Zoom de la vue monde, estimé avant que la carte existe : le globe occupe environ
+// 92 % du plus petit côté.
+function getWorldZoom(width: number, height: number) {
+  const side = Math.min(width, height)
+  if (!side) return INIT_ZOOM
+  return Math.min(3, Math.max(0.5, Math.log2((side * 0.92) / 150)))
 }
 
-function getMapFitPadding(map: maplibregl.Map) {
+// Taille réelle du globe à l'écran pour un zoom donné (diamètre / 2^zoom), mesurée
+// sur la carte : elle dépend de l'inclinaison et de la hauteur de l'écran, d'où un
+// globe qui débordait sur téléphone avec l'estimation fixe.
+const globeScaleByMap = new WeakMap<maplibregl.Map, number>()
+
+// Marges de la caméra, sans transform CSS :
+// - à gauche, la largeur de la barre latérale (sur ordinateur) : le globe se centre
+//   dans l'espace libre, donc un peu à droite ;
+// - en bas, en vue globe seulement : la caméra inclinée fait descendre le globe
+//   d'environ rayon × sin(inclinaison) ; cette marge le remonte au centre.
+function getSidebarInset(map: maplibregl.Map) {
   const container = map.getContainer()
-  const width = container.clientWidth
+  const sidebar = container.ownerDocument.querySelector('.sidebar')
+  const rect = sidebar instanceof HTMLElement && sidebar.offsetParent ? sidebar.getBoundingClientRect() : null
+  return rect && rect.width > 0 && rect.left < container.clientWidth / 3 ? Math.round(rect.right) : 0
+}
+
+// Marge basse fixée une fois pour la vue monde puis gardée telle quelle : une
+// marge qui varierait avec le zoom ferait monter et descendre le globe. Elle ne
+// compense que la moitié de la descente due à l'inclinaison : le globe reste
+// presque centré en vue monde, et la vue rapprochée (sans inclinaison) n'est
+// décalée que d'une soixantaine de pixels vers le haut.
+const bottomPaddingByMap = new WeakMap<maplibregl.Map, number>()
+
+function measureBottomPadding(map: maplibregl.Map, worldZoom: number) {
+  const scale = globeScaleByMap.get(map)
+  if (!scale) return
+  const radius = scale * 2 ** worldZoom / 2
+  bottomPaddingByMap.set(map, Math.round(radius * Math.sin(CINEMATIC_CAMERA.pitch * Math.PI / 180)))
+}
+
+function cameraPaddingFor(map: maplibregl.Map) {
+  return { top: 0, right: 0, bottom: bottomPaddingByMap.get(map) ?? 0, left: getSidebarInset(map) }
+}
+
+function updateMapPadding(map: maplibregl.Map) {
+  const padding = cameraPaddingFor(map)
+  const current = map.getPadding()
+  if (current.left !== padding.left || current.bottom !== padding.bottom) map.setPadding(padding)
+}
+
+// Zoom de la vue monde : le globe occupe ~80 % de la hauteur, sans dépasser 94 %
+// de la largeur libre (hors barre latérale).
+function getWorldZoomFor(map: maplibregl.Map) {
+  const container = map.getContainer()
+  const width = container.clientWidth - (map.getPadding().left ?? 0)
   const height = container.clientHeight
-  const doc = container.ownerDocument
-  const isCompact = width < 720
-  const sidebar = visibleRect(doc.querySelector('.sidebar'))
-  const topbar = visibleRect(doc.querySelector('.topbar'))
-  const mobileHeader = visibleRect(doc.querySelector('.mobile-header'))
-  const tierBoard = visibleRect(doc.querySelector('.tier-board'))
-  const legend = visibleRect(doc.querySelector('.legend'))
+  const disc = measureGlobeDisc(map)
+  if (disc) globeScaleByMap.set(map, Math.max(disc.width, disc.height) / 2 ** map.getZoom())
+  const scale = globeScaleByMap.get(map)
+  if (!scale || !width || !height) return getWorldZoom(width, height)
+  return Math.min(3.2, Math.max(0.3, Math.log2(Math.min(width * 0.94, height * 0.8) / scale)))
+}
 
-  const overlayLeft = sidebar ? Math.min(sidebar.right, width * 0.42) : 0
-  const overlayTop = Math.max(topbar?.bottom ?? 0, mobileHeader?.bottom ?? 0)
-  const overlayBottom = Math.max(
-    tierBoard && tierBoard.top < height ? height - tierBoard.top : 0,
-    legend && legend.top < height ? height - legend.top : 0,
-  )
+// Dézoom bloqué un peu en dessous de la vue monde : le globe ne devient pas une bille.
+function updateMinZoom(map: maplibregl.Map) {
+  map.setMinZoom(Math.max(0, getWorldZoomFor(map) - 0.35))
+}
 
-  if (isCompact) {
-    return {
-      top: Math.min(170, Math.max(118, overlayTop + PIN_FOCUS_INSET * 0.7)),
-      right: 64,
-      bottom: Math.min(280, Math.max(170, overlayBottom + PIN_FOCUS_INSET)),
-      left: 64,
+// Point à `distance` degrés du départ, dans la direction `bearing` (grand cercle).
+function destinationPoint([lng, lat]: [number, number], bearing: number, distance: number): [number, number] {
+  const rad = Math.PI / 180
+  const φ1 = lat * rad
+  const λ1 = lng * rad
+  const θ = bearing * rad
+  const δ = distance * rad
+  const φ2 = Math.asin(Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ))
+  const λ2 = λ1 + Math.atan2(Math.sin(θ) * Math.sin(δ) * Math.cos(φ1), Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2))
+  return [((λ2 / rad + 540) % 360) - 180, φ2 / rad]
+}
+
+// Cale le halo sur le disque du globe : on cherche, dans 16 directions, où la Terre
+// bascule sur sa face cachée, puis on prend la boîte englobante de ces bords (juste
+// aussi avec la caméra inclinée). Masqué quand la carte est plate ou zoomée.
+function updateGlobeGlow(map: maplibregl.Map, ...elements: Array<HTMLDivElement | null>) {
+  const disc = measureGlobeDisc(map)
+  if (disc) globeScaleByMap.set(map, Math.max(disc.width, disc.height) / 2 ** map.getZoom())
+  for (const element of elements) {
+    if (!element) continue
+    if (!disc) {
+      element.style.opacity = '0'
+      continue
+    }
+    element.style.width = `${disc.width}px`
+    element.style.height = `${disc.height}px`
+    element.style.transform = `translate3d(${disc.x - disc.width / 2}px, ${disc.y - disc.height / 2}px, 0)`
+    element.style.opacity = Math.min(1, Math.max(0, (6 - map.getZoom()) / 1.5)).toFixed(3)
+  }
+}
+
+function measureGlobeDisc(map: maplibregl.Map) {
+  const center = map.getCenter()
+  const origin: [number, number] = [center.lng, center.lat]
+  const isOccluded = (bearing: number, distance: number) =>
+    map.transform.isLocationOccluded(new maplibregl.LngLat(...destinationPoint(origin, bearing, distance)))
+  if (map.getZoom() > 6 || !isOccluded(0, 179)) return null
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+  for (let bearing = 0; bearing < 360; bearing += 22.5) {
+    let visible = 0
+    let hidden = 179
+    for (let step = 0; step < 12; step++) {
+      const middle = (visible + hidden) / 2
+      if (isOccluded(bearing, middle)) hidden = middle
+      else visible = middle
+    }
+    const edge = map.project(destinationPoint(origin, bearing, visible) as maplibregl.LngLatLike)
+    minX = Math.min(minX, edge.x); maxX = Math.max(maxX, edge.x)
+    minY = Math.min(minY, edge.y); maxY = Math.max(maxY, edge.y)
+  }
+  // Ellipse et non cercle : vue de biais, la silhouette s'écrase un peu.
+  return { x: (minX + maxX) / 2, y: (minY + maxY) / 2, width: maxX - minX, height: maxY - minY }
+}
+
+// Projette un point à l'écran, ou null s'il est sur la face cachée du globe.
+function projectVisible(map: maplibregl.Map, lng: number, lat: number): [number, number] | null {
+  if (map.transform.isLocationOccluded(new maplibregl.LngLat(lng, lat))) return null
+  const { x, y } = map.project([lng, lat] as maplibregl.LngLatLike)
+  return [x, y]
+}
+
+// Préchargement des tuiles autour des destinations, au zoom d'arrivée de la
+// plongée : au clic, tout est déjà dans le cache du navigateur (même adresse, même
+// fichier). MapTiler compte ses requêtes : on le limite aux premières destinations ;
+// le relief (AWS) et l'image NASA, gratuits, sont préchargés pour toutes.
+const PREFETCH_PLAN: Array<{ source: string; zoom: number; radius: number; paid?: boolean }> = [
+  { source: 'maptiler_planet', zoom: 7, radius: 1, paid: true },
+  { source: 'outdoor', zoom: 7, radius: 1, paid: true },
+  { source: 'atlas-dem', zoom: 8, radius: 2 },
+  { source: 'atlas-satellite', zoom: 8, radius: 1 },
+]
+const PREFETCH_PAID_MAX_DESTINATIONS = 12
+
+function tileUrlsAround(template: string, lng: number, lat: number, zoom: number, radius: number) {
+  const n = 2 ** zoom
+  const clampedLat = Math.max(-MERCATOR_MAX_LAT, Math.min(MERCATOR_MAX_LAT, lat)) * Math.PI / 180
+  const cx = Math.floor((lng + 180) / 360 * n)
+  const cy = Math.floor((1 - Math.log(Math.tan(clampedLat) + 1 / Math.cos(clampedLat)) / Math.PI) / 2 * n)
+  const urls: string[] = []
+  for (let dy = -radius; dy <= radius; dy++) {
+    const y = cy + dy
+    if (y < 0 || y >= n) continue
+    for (let dx = -radius; dx <= radius; dx++) {
+      const x = ((cx + dx) % n + n) % n
+      urls.push(template.replace('{z}', String(zoom)).replace('{x}', String(x)).replace('{y}', String(y)))
     }
   }
+  return urls
+}
 
-  return {
-    top: Math.min(190, Math.max(150, overlayTop + PIN_FOCUS_INSET)),
-    right: Math.min(150, Math.max(112, width * 0.1)),
-    bottom: Math.min(220, Math.max(132, overlayBottom + PIN_FOCUS_INSET * 0.75)),
-    left: Math.min(width * 0.46, Math.max(overlayLeft + PIN_FOCUS_INSET, width * 0.28)),
+async function prefetchDestinationTiles(map: maplibregl.Map, points: Array<{ lng: number; lat: number }>, signal: AbortSignal) {
+  const urls = new Set<string>()
+  points.forEach((point, index) => {
+    for (const step of PREFETCH_PLAN) {
+      if (step.paid && index >= PREFETCH_PAID_MAX_DESTINATIONS) continue
+      const source = map.getSource(step.source) as { tiles?: unknown } | undefined
+      const template = Array.isArray(source?.tiles) ? String(source.tiles[0]) : null
+      if (!template) continue
+      for (const url of tileUrlsAround(template, point.lng, point.lat, step.zoom, step.radius)) urls.add(url)
+    }
+  })
+  const queue = [...urls]
+  const worker = async () => {
+    while (queue.length && !signal.aborted) {
+      const url = queue.shift()!
+      try { await fetch(url, { signal, mode: 'cors', credentials: 'omit', priority: 'low' } as RequestInit) } catch { /* tuile manquante : sans gravité */ }
+    }
   }
+  await Promise.all(Array.from({ length: 4 }, worker))
+}
+
+// Centre du globe qui montre le plus de destinations sur la face visible : on
+// essaie chaque destination comme centre, on garde celle qui en voit le plus à
+// moins de 70°, puis on centre sur la moyenne de celles-ci.
+function getBestGlobeCenter(points: Array<{ lng: number; lat: number }>): [number, number] | null {
+  if (!points.length) return null
+  const rad = Math.PI / 180
+  const toVector = ({ lng, lat }: { lng: number; lat: number }) => [
+    Math.cos(lat * rad) * Math.cos(lng * rad),
+    Math.cos(lat * rad) * Math.sin(lng * rad),
+    Math.sin(lat * rad),
+  ]
+  const vectors = points.map(toVector)
+  const limit = Math.cos(70 * rad)
+  let best: number[][] = []
+  for (const candidate of vectors) {
+    const seen = vectors.filter(v => v[0] * candidate[0] + v[1] * candidate[1] + v[2] * candidate[2] >= limit)
+    if (seen.length > best.length) best = seen
+  }
+  const sum = best.reduce((acc, v) => [acc[0] + v[0], acc[1] + v[1], acc[2] + v[2]], [0, 0, 0])
+  const length = Math.hypot(sum[0], sum[1], sum[2])
+  if (!length) return null
+  return [Math.atan2(sum[1], sum[0]) / rad, Math.asin(sum[2] / length) / rad]
 }
 
 function fitMapToDestinations(
@@ -128,41 +347,42 @@ function fitMapToDestinations(
 ) {
   const visiblePoints = getMapFocusPoints(destinations, friendDestinations)
   const duration = options?.duration ?? 650
-  const padding = getMapFitPadding(map)
+  const worldZoom = getWorldZoomFor(map)
 
-  if (visiblePoints.length > 1) {
-    const bounds = new maplibregl.LngLatBounds()
-    for (const point of visiblePoints) {
-      bounds.extend([point.lng, point.lat])
-    }
-    map.fitBounds(bounds, {
-      padding,
-      maxZoom: AUTO_FIT_MAX_ZOOM,
-      duration,
-      easing: t => 1 - Math.pow(1 - t, 3),
-    })
-    return true
-  }
-
-  if (visiblePoints.length === 1) {
-    map.flyTo({
-      center: [visiblePoints[0].lng, visiblePoints[0].lat],
-      zoom: Math.min(Math.max(map.getZoom(), 4.4), AUTO_FIT_MAX_ZOOM),
-      duration,
-      offset: [
-        (padding.left - padding.right) / 2,
-        (padding.top - padding.bottom) / 2,
-      ],
-      easing: t => 1 - Math.pow(1 - t, 3),
-    })
+  // Toujours le globe entier, tourné vers l'endroit où l'on voit le plus de
+  // destinations ; on zoome ensuite soi-même ou en cliquant sur un pin.
+  const center = getBestGlobeCenter(visiblePoints)
+  if (center) {
+    map.flyTo({ center, zoom: worldZoom, ...CINEMATIC_CAMERA, padding: cameraPaddingFor(map), duration, easing: t => 1 - Math.pow(1 - t, 3) })
+    correctWorldZoomOnArrival(map)
     return true
   }
 
   if (options?.fallbackToWorld) {
-    map.flyTo({ center: INIT_CENTER, zoom: INIT_ZOOM, duration: Math.min(duration, 400) })
+    map.flyTo({ center: INIT_CENTER, zoom: worldZoom, ...CINEMATIC_CAMERA, padding: cameraPaddingFor(map), duration: Math.min(duration, 400) })
+    correctWorldZoomOnArrival(map)
   }
 
   return false
+}
+
+// La taille du globe se mesure mieux une fois arrivé (la mesure prise avant le
+// premier rendu en globe est approximative) : on ajuste alors le zoom et la marge
+// basse en douceur, deux fois au plus pour converger. Si l'on est parti ailleurs
+// entre-temps (zoom, plongée vers la carte), on ne ramène pas à la vue monde.
+function correctWorldZoomOnArrival(map: maplibregl.Map, attempts = 2) {
+  map.once('moveend', () => {
+    const corrected = getWorldZoomFor(map)
+    updateMinZoom(map)
+    if (Math.abs(map.getZoom() - corrected) > 0.6) return
+    measureBottomPadding(map, corrected)
+    const padding = cameraPaddingFor(map)
+    const needsZoom = Math.abs(map.getZoom() - corrected) > 0.04
+    const needsPadding = Math.abs((map.getPadding().bottom ?? 0) - padding.bottom) > 6
+    if (!needsZoom && !needsPadding) return
+    map.easeTo({ zoom: corrected, padding, duration: 500 })
+    if (attempts > 1) correctWorldZoomOnArrival(map, attempts - 1)
+  })
 }
 
 interface FlyTarget { lat: number; lng: number; name: string }
@@ -203,15 +423,16 @@ interface MapMarkerPin {
 
 const ATLAS_PREMIUM_PALETTE = {
   sea: '#c9e3ee',
-  land: '#f2eee4',
-  sand: '#e8ddc8',
-  sage: '#aebf9a',
-  sageSoft: '#c2ceb2',
-  ice: '#eef6f7',
-  relief: '#d3c8b6',
-  labelCountry: '#766f64',
-  labelOcean: '#7fa6bf',
-  labelHalo: 'rgba(246, 242, 232, 0.88)',
+  land: '#e9dcbb',
+  sand: '#e2c48c',
+  seaVivid: '#4b8fcb',
+  seaDeep: '#4787c0',
+  forest: '#5f9945',
+  meadow: '#9fc06a',
+  // Ombre froide et légère : elle va aussi bien aux terres qu'aux fonds marins.
+  relief: 'rgba(30, 52, 92, 0.58)',
+  shallows: '#a9dcf3',
+  labelOcean: '#eef6fc',
   border: 'rgba(145, 131, 110, 0.18)',
   borderSoft: 'rgba(145, 131, 110, 0.10)',
   coast: 'rgba(172, 207, 220, 0.42)',
@@ -274,6 +495,279 @@ function hideLayer(map: maplibregl.Map, layerId: string) {
   safeSetLayout(map, layerId, 'visibility', 'none')
 }
 
+// Imagerie « Blue Marble » de la NASA (domaine public, sans clé) : elle apporte
+// les dégradés naturels. Posée juste au-dessus de l'eau, sous les hauts-fonds et
+// le relief, qui la sculptent par-dessus (rendu illustré, presque cel-shading).
+// Deux étages : une image de toute la Terre (public/earth-bluemarble.jpg, tuiles
+// du zoom 4 assemblées), chargée une fois, qui sert seule en vue globe et de fond
+// sans trou ensuite ; puis les tuiles plus fines par-dessus à partir du zoom 3,4.
+// Les deux s'effacent entre les zooms 5,5 et 7,5 (les tuiles s'arrêtent au zoom 8).
+const ATLAS_SATELLITE_PAINT = {
+  'raster-opacity': ['interpolate', ['linear'], ['zoom'], 5.5, 1, 7.5, 0],
+  'raster-brightness-min': 0.12,
+  'raster-brightness-max': 1,
+  'raster-contrast': 0.1,
+  'raster-saturation': 0.3,
+} satisfies maplibregl.RasterLayerSpecification['paint']
+const MERCATOR_MAX_LAT = 85.0511287798
+function addAtlasSatellite(map: maplibregl.Map) {
+  if (map.getLayer('atlas-satellite')) return
+  const layers = map.getStyle().layers
+  const waterIndex = layers.findIndex(layer => layer.type === 'fill' && /water/i.test(layer.id) && !/waterway/i.test(layer.id))
+  const beforeId = waterIndex >= 0 ? layers[waterIndex + 1]?.id : undefined
+  try {
+    map.addSource('atlas-earth', {
+      type: 'image',
+      url: '/earth-bluemarble.jpg',
+      coordinates: [[-180, MERCATOR_MAX_LAT], [180, MERCATOR_MAX_LAT], [180, -MERCATOR_MAX_LAT], [-180, -MERCATOR_MAX_LAT]],
+    })
+    map.addLayer({
+      id: 'atlas-earth',
+      type: 'raster',
+      source: 'atlas-earth',
+      paint: { ...ATLAS_SATELLITE_PAINT, 'raster-fade-duration': 0 },
+    }, beforeId)
+    map.addSource('atlas-satellite', {
+      type: 'raster',
+      tiles: ['https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg'],
+      // Tuiles de 256 px déclarées en 128 : MapLibre charge un niveau plus fin,
+      // l'image reste nette en vue globe.
+      tileSize: 128,
+      maxzoom: 8,
+    })
+    map.addLayer({
+      id: 'atlas-satellite',
+      type: 'raster',
+      source: 'atlas-satellite',
+      minzoom: 3.4,
+      paint: { ...ATLAS_SATELLITE_PAINT, 'raster-fade-duration': 450 },
+    }, beforeId)
+    // Voile bleu translucide sur la mer : garde les dégradés de profondeur de
+    // l'imagerie avec un bleu plus lumineux. Disparaît avec elle.
+    const water = layers[waterIndex]
+    // Au-dessus de l'ombrage du relief : sur la mer, le voile lisse aussi son grain.
+    const styleLayers = map.getStyle().layers
+    const hillshadeIndex = styleLayers.findIndex(layer => layer.type === 'hillshade')
+    const tintBeforeId = hillshadeIndex >= 0 ? styleLayers[hillshadeIndex + 1]?.id : beforeId
+    if (water && 'source' in water) {
+      map.addLayer({
+        id: 'atlas-sea-tint',
+        type: 'fill',
+        source: water.source,
+        'source-layer': water['source-layer'],
+        filter: OCEAN_ONLY_FILTER,
+        paint: {
+          // Assez couvrant pour lisser le grain du fond marin.
+          'fill-color': '#2f88cc',
+          'fill-opacity': ['interpolate', ['linear'], ['zoom'], 5.5, 0.62, 7.5, 0],
+          'fill-antialias': true,
+        },
+      }, tintBeforeId)
+    }
+  } catch { /* imagerie indisponible : la carte vectorielle reste seule */ }
+}
+
+// Mer seulement (pas les lacs ni les rivières), d'après la classe OpenMapTiles.
+const OCEAN_ONLY_FILTER: maplibregl.FilterSpecification = ['==', ['get', 'class'], 'ocean']
+
+// Reflets sur la mer (public/sea-ripples.png, texture raccordable) : de larges
+// reflets doux, sans lignes, posés sur la mer seulement. L'animation fait glisser
+// la texture elle-même (pas la forme de la mer, qui reste calée sur les côtes).
+const SEA_RIPPLES_IMAGE = 'atlas-sea-ripples'
+
+async function addAtlasSeaRipples(map: maplibregl.Map) {
+  if (map.getLayer(SEA_RIPPLES_IMAGE)) return null
+  const { data } = await map.loadImage('/sea-ripples.png')
+  const width = data.width
+  const height = data.height
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d')
+  if (!context) return null
+  context.drawImage(data as CanvasImageSource, 0, 0)
+  const pixels = context.getImageData(0, 0, width, height).data
+  if (!map.getStyle()) return null
+  map.addImage(SEA_RIPPLES_IMAGE, { width, height, data: new Uint8Array(pixels) })
+  const above = map.getLayer('atlas-sea-tint') ? map.getStyle().layers.findIndex(layer => layer.id === 'atlas-sea-tint') : -1
+  const water = map.getStyle().layers.find(l => l.type === 'fill' && /water/i.test(l.id) && !/waterway/i.test(l.id))
+  if (!water || !('source' in water)) return null
+  map.addLayer({
+    id: SEA_RIPPLES_IMAGE,
+    type: 'fill',
+    source: water.source,
+    'source-layer': water['source-layer'],
+    filter: OCEAN_ONLY_FILTER,
+    paint: {
+      'fill-pattern': SEA_RIPPLES_IMAGE,
+      'fill-opacity': ['interpolate', ['linear'], ['zoom'], 0, 1, 6, 0.85, 10, 0.45],
+    },
+  }, above >= 0 ? map.getStyle().layers[above + 1]?.id : undefined)
+  return { width, height, pixels }
+}
+
+// Fait glisser les reflets doucement (≈ 12 images/s), en pause pendant les
+// mouvements de carte (et 1,5 s après), quand l'onglet est caché, en vue très
+// rapprochée ou si l'appareil demande moins d'animations.
+const SEA_RIPPLES_QUIET_MS = 1500
+function animateSeaRipples(map: maplibregl.Map, base: { width: number; height: number; pixels: Uint8ClampedArray }) {
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return () => {}
+  const { width, height, pixels } = base
+  const frame = new Uint8Array(pixels.length)
+  const rowBytes = width * 4
+  let raf = 0
+  let last = 0
+  let moving = false
+  let movedAt = 0
+  const onMoveStart = () => { moving = true }
+  const onMoveEnd = () => { moving = false; movedAt = performance.now() }
+  map.on('movestart', onMoveStart)
+  map.on('moveend', onMoveEnd)
+  const start = performance.now()
+  const tick = (now: number) => {
+    raf = requestAnimationFrame(tick)
+    // En pause pendant les zooms et déplacements : chaque image de reflets est
+    // recopiée dans toutes les tuiles visibles (20 à 45 ms sur l'image suivante).
+    // Entre deux crans de molette, la carte s'arrête un instant : on attend donc
+    // un vrai moment de calme avant de reprendre.
+    if (moving || now - movedAt < SEA_RIPPLES_QUIET_MS) return
+    if (now - last < 80 || document.hidden || map.getZoom() > 10) return
+    // Carte au repos sous le globe 3D : on ne la redessine pas pour rien.
+    if (document.documentElement.dataset.globeVisible === 'true') return
+    last = now
+    // L'horodatage d'image peut précéder `start` : jamais de décalage négatif.
+    const seconds = Math.max(0, now - start) / 1000
+    const dx = Math.floor(seconds * 5) % width
+    const dy = Math.floor(seconds * 1.2 + Math.sin(seconds * 0.25) * 8 + height * 4) % height
+    for (let y = 0; y < height; y++) {
+      const source = ((y + dy) % height) * rowBytes
+      const target = y * rowBytes
+      const split = dx * 4
+      frame.set(pixels.subarray(source + split, source + rowBytes), target)
+      frame.set(pixels.subarray(source, source + split), target + rowBytes - split)
+    }
+    try { map.updateImage(SEA_RIPPLES_IMAGE, { width, height, data: frame }) } catch { /* style rechargé */ }
+  }
+  raf = requestAnimationFrame(tick)
+  return () => {
+    cancelAnimationFrame(raf)
+    map.off('movestart', onMoveStart)
+    map.off('moveend', onMoveEnd)
+  }
+}
+
+// Calottes aux pôles : textures et relief y convergent vers un point et dessinent
+// des anneaux. Un fondu vers le bleu de l'océan les recouvre discrètement.
+function addAtlasPolarCaps(map: maplibregl.Map, beforeId?: string) {
+  if (map.getSource('atlas-polar-caps')) return
+  const band = (from: number, to: number, opacity: number): GeoJSON.Feature<GeoJSON.Polygon, { opacity: number }> => ({
+    type: 'Feature',
+    properties: { opacity },
+    geometry: {
+      type: 'Polygon',
+      coordinates: [[[-180, from], [180, from], [180, to], [-180, to], [-180, from]]],
+    },
+  })
+  // Bandes d'un quart de degré de 79° à 85°, opacité en courbe douce (aucun bord
+  // visible), puis une bande pleine jusqu'au pôle : au-delà de 85°, la carte étire
+  // ce qu'elle a au bord, il faut donc que ce bord soit déjà couvert.
+  const bands: Array<readonly [number, number, number]> = Array.from({ length: 24 }, (_, i) => {
+    const t = (i + 1) / 24
+    return [79 + i / 4, 79 + (i + 1) / 4, t * t * (3 - 2 * t)] as const
+  })
+  bands.push([85, 90, 1])
+  map.addSource('atlas-polar-caps', {
+    type: 'geojson',
+    data: {
+      type: 'FeatureCollection',
+      features: bands.flatMap(([from, to, opacity]) => [band(from, to, opacity), band(-from, -to, opacity)]),
+    },
+  })
+  map.addLayer({
+    id: 'atlas-polar-caps',
+    type: 'fill',
+    source: 'atlas-polar-caps',
+    paint: {
+      // Bleu d'océan, proche de la mer voisine : la calotte se fond dans le décor.
+      'fill-color': '#2f6fa6',
+      'fill-opacity': ['get', 'opacity'],
+    },
+  }, beforeId)
+}
+
+// Hauts-fonds : frange claire et floue le long des côtes, décalée côté mer.
+function addAtlasShallows(map: maplibregl.Map) {
+  if (map.getLayer('atlas-shallows')) return
+  const layers = map.getStyle().layers
+  const water = layers.find(l => l.type === 'fill' && /water/i.test(l.id) && !/waterway/i.test(l.id))
+  if (!water || !('source' in water)) return
+  const width: maplibregl.ExpressionSpecification = ['interpolate', ['exponential', 1.6], ['zoom'], 0, 2, 3, 6, 6, 16, 9, 30]
+  try {
+    map.addLayer({
+      id: 'atlas-shallows',
+      type: 'line',
+      source: water.source,
+      'source-layer': water['source-layer'],
+      filter: OCEAN_ONLY_FILTER,
+      paint: {
+        'line-color': ATLAS_PREMIUM_PALETTE.shallows,
+        'line-width': width,
+        'line-offset': ['interpolate', ['exponential', 1.6], ['zoom'], 0, 1, 3, 3, 6, 8, 9, 15],
+        'line-blur': width,
+        // Disparaît en vue rapprochée : sur les lacs, elle ferait des taches floues.
+        'line-opacity': ['interpolate', ['linear'], ['zoom'], 0, 0.75, 5, 0.6, 7, 0],
+      },
+    }, layers[layers.indexOf(water) + 1]?.id)
+  } catch { /* tile schemas may vary */ }
+}
+
+// Au dézoom maximal, les continents plutôt que les pays.
+const ATLAS_CONTINENT_MAX_ZOOM = 3.4
+
+function addAtlasContinentLabels(map: maplibregl.Map) {
+  if (map.getSource('atlas-continent-labels')) return
+  const continents: Array<[string, string, [number, number]]> = [
+    ['AFRICA', 'AFRIQUE', [20, 4]],
+    ['EUROPE', 'EUROPE', [15, 52]],
+    ['ASIA', 'ASIE', [90, 45]],
+    ['NORTH AMERICA', 'AMÉRIQUE DU NORD', [-100, 45]],
+    ['SOUTH AMERICA', 'AMÉRIQUE DU SUD', [-60, -15]],
+    ['OCEANIA', 'OCÉANIE', [134, -25]],
+    ['ANTARCTICA', 'ANTARCTIQUE', [0, -80]],
+  ]
+  map.addSource('atlas-continent-labels', {
+    type: 'geojson',
+    data: {
+      type: 'FeatureCollection',
+      features: continents.map(([en, fr, coordinates]) => ({
+        type: 'Feature',
+        properties: { name: t(en, fr) },
+        geometry: { type: 'Point', coordinates },
+      })),
+    },
+  })
+  map.addLayer({
+    id: 'atlas-continent-labels',
+    type: 'symbol',
+    source: 'atlas-continent-labels',
+    maxzoom: ATLAS_CONTINENT_MAX_ZOOM,
+    layout: {
+      'text-allow-overlap': true,
+      'text-field': ['get', 'name'],
+      'text-font': ['Roboto Bold', 'Noto Sans Bold'],
+      'text-letter-spacing': 0.42,
+      'text-max-width': 14,
+      'text-size': ['interpolate', ['linear'], ['zoom'], 0, 12, 3, 16],
+    },
+    paint: {
+      'text-color': 'rgba(255, 255, 255, 0.92)',
+      'text-halo-color': 'rgba(20, 44, 80, 0.45)',
+      'text-halo-width': 1.4,
+      'text-halo-blur': 0.8,
+    },
+  })
+}
+
 function addAtlasCountryLabels(map: maplibregl.Map) {
   if (map.getSource('atlas-country-labels')) return
 
@@ -286,7 +780,8 @@ function addAtlasCountryLabels(map: maplibregl.Map) {
     id: 'atlas-country-labels',
     type: 'symbol',
     source: 'atlas-country-labels',
-    minzoom: 0,
+    // Les pays prennent le relais des continents en zoomant.
+    minzoom: ATLAS_CONTINENT_MAX_ZOOM,
     maxzoom: 8,
     layout: {
       'symbol-sort-key': ['get', 'priority'],
@@ -305,10 +800,11 @@ function addAtlasCountryLabels(map: maplibregl.Map) {
       ],
     },
     paint: {
-      'text-color': ATLAS_PREMIUM_PALETTE.labelCountry,
-      'text-halo-blur': 0.35,
-      'text-halo-color': ATLAS_PREMIUM_PALETTE.labelHalo,
-      'text-halo-width': 1.5,
+      // Blanc avec ombre bleutée, comme les continents : lisible sur l'imagerie.
+      'text-color': 'rgba(255, 255, 255, 0.95)',
+      'text-halo-blur': 0.8,
+      'text-halo-color': 'rgba(20, 44, 80, 0.5)',
+      'text-halo-width': 1.4,
       'text-opacity': [
         'interpolate', ['linear'], ['zoom'],
         0, 0.62,
@@ -319,18 +815,52 @@ function addAtlasCountryLabels(map: maplibregl.Map) {
   })
 }
 
+// Ombrage refait de zéro (nouvelle source, visible dès la vue monde alors que
+// MapTiler ne l'affiche qu'à partir du zoom 3).
+// Le relief MapTiler n'a pas de fonds marins (0 m partout en mer). Les Terrain
+// Tiles (données ouvertes AWS, sans clé) les ont : on les utilise pour tout le
+// relief, posé au-dessus de l'eau pour sculpter dorsales, fosses et plateaux.
+const ATLAS_DEM_TILES = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'
+
+function replaceAtlasHillshade(map: maplibregl.Map, layer: maplibregl.LayerSpecification) {
+  if (layer.type !== 'hillshade') return
+  const palette = ATLAS_PREMIUM_PALETTE
+  const layers = map.getStyle().layers
+  const waterIndex = layers.findIndex(l => l.type === 'fill' && /water/i.test(l.id) && !/waterway/i.test(l.id))
+  const beforeId = waterIndex >= 0 ? layers[waterIndex + 1]?.id : undefined
+  try {
+    map.removeLayer(layer.id)
+    if (!map.getSource('atlas-dem')) {
+      map.addSource('atlas-dem', { type: 'raster-dem', tiles: [ATLAS_DEM_TILES], encoding: 'terrarium', tileSize: 256, maxzoom: 8 })
+    }
+    map.addLayer({
+      id: layer.id,
+      type: 'hillshade',
+      source: 'atlas-dem',
+      minzoom: 0,
+      paint: {
+        // Méthode « igor » : ombrage doux, sans le grain du multidirectionnel.
+        'hillshade-method': 'igor',
+        'hillshade-illumination-direction': 315,
+        'hillshade-highlight-color': 'rgba(255, 252, 244, 0.7)',
+        'hillshade-shadow-color': palette.relief,
+        'hillshade-accent-color': 'rgba(0, 0, 0, 0)',
+        'hillshade-exaggeration': ['interpolate', ['linear'], ['zoom'], 0, 1, 4, 0.7, 8, 0.4],
+      },
+    }, beforeId)
+  } catch { /* tile schemas may vary */ }
+}
+
 function customizeAtlasPremiumStyle(map: maplibregl.Map) {
   const palette = ATLAS_PREMIUM_PALETTE
 
-  for (const layer of map.getStyle().layers) {
+  const layers = map.getStyle().layers
+  for (const layer of layers) {
     const { id, type } = layer
     const lid = id.toLowerCase()
 
     if (type === 'hillshade') {
-      safeSetPaint(map, id, 'hillshade-shadow-color', palette.relief)
-      safeSetPaint(map, id, 'hillshade-highlight-color', '#fffaf0')
-      safeSetPaint(map, id, 'hillshade-accent-color', '#c6bba8')
-      safeSetPaint(map, id, 'hillshade-exaggeration', ['interpolate', ['linear'], ['zoom'], 0, 0.22, 4, 0.16, 8, 0.10])
+      replaceAtlasHillshade(map, layer)
       continue
     }
 
@@ -341,32 +871,34 @@ function customizeAtlasPremiumStyle(map: maplibregl.Map) {
 
     if (type === 'fill') {
       if (/water/.test(lid) && !/waterway|waterfall|land/.test(lid)) {
-        safeSetPaint(map, id, 'fill-color', palette.sea)
-        safeSetPaint(map, id, 'fill-opacity', 0.82)
+        // Bleu franc mais clair sur le globe, plus profond quand on zoome.
+        safeSetPaint(map, id, 'fill-color', ['interpolate', ['linear'], ['zoom'], 2.5, palette.seaVivid, 7, palette.seaDeep])
+        safeSetPaint(map, id, 'fill-opacity', 0.94)
         continue
       }
 
+      // Végétation, glaces et déserts colorés dès le globe, comme un atlas.
       if (/wood|forest|tree/.test(lid)) {
-        safeSetPaint(map, id, 'fill-color', palette.sage)
-        safeSetPaint(map, id, 'fill-opacity', 0.14)
+        safeSetPaint(map, id, 'fill-color', palette.forest)
+        safeSetPaint(map, id, 'fill-opacity', ['interpolate', ['linear'], ['zoom'], 0, 0.62, 4, 0.5, 7, 0.38])
         continue
       }
 
       if (/scrub|grass|meadow|park|green/.test(lid)) {
-        safeSetPaint(map, id, 'fill-color', palette.sageSoft)
-        safeSetPaint(map, id, 'fill-opacity', 0.1)
+        safeSetPaint(map, id, 'fill-color', palette.meadow)
+        safeSetPaint(map, id, 'fill-opacity', ['interpolate', ['linear'], ['zoom'], 0, 0.55, 4, 0.42, 7, 0.32])
         continue
       }
 
       if (/glacier|ice|snow/.test(lid)) {
-        safeSetPaint(map, id, 'fill-color', palette.ice)
-        safeSetPaint(map, id, 'fill-opacity', 0.74)
+        safeSetPaint(map, id, 'fill-color', '#ffffff')
+        safeSetPaint(map, id, 'fill-opacity', 0.92)
         continue
       }
 
       if (/sand|beach|desert/.test(lid)) {
         safeSetPaint(map, id, 'fill-color', palette.sand)
-        safeSetPaint(map, id, 'fill-opacity', 0.34)
+        safeSetPaint(map, id, 'fill-opacity', 0.72)
         continue
       }
 
@@ -390,8 +922,8 @@ function customizeAtlasPremiumStyle(map: maplibregl.Map) {
         safeSetLayout(map, id, 'visibility', 'visible')
         safeSetLayerZoomRange(map, id, 0, 24)
         safeSetPaint(map, id, 'text-color', palette.labelOcean)
-        safeSetPaint(map, id, 'text-opacity', 0.72)
-        safeSetPaint(map, id, 'text-halo-color', 'rgba(220, 239, 246, 0.42)')
+        safeSetPaint(map, id, 'text-opacity', 0.85)
+        safeSetPaint(map, id, 'text-halo-color', 'rgba(52, 110, 160, 0.35)')
         safeSetPaint(map, id, 'text-halo-width', 1.1)
         safeSetPaint(map, id, 'text-halo-blur', 0.25)
         safeSetLayout(map, id, 'text-font', ['Open Sans Italic'])
@@ -405,7 +937,7 @@ function customizeAtlasPremiumStyle(map: maplibregl.Map) {
         safeSetLayerZoomRange(map, id, 0, 24)
         safeSetPaint(map, id, 'text-color', palette.labelOcean)
         safeSetPaint(map, id, 'text-opacity', 0.5)
-        safeSetPaint(map, id, 'text-halo-color', 'rgba(220, 239, 246, 0.30)')
+        safeSetPaint(map, id, 'text-halo-color', 'rgba(52, 110, 160, 0.3)')
         safeSetPaint(map, id, 'text-halo-width', 0.8)
         safeSetLayout(map, id, 'text-font', ['Open Sans Italic'])
         safeSetLayout(map, id, 'text-letter-spacing', 0.14)
@@ -462,7 +994,15 @@ function customizeAtlasPremiumStyle(map: maplibregl.Map) {
     }
   }
 
+  addAtlasShallows(map)
+  addAtlasSatellite(map)
+  // Au-dessus de l'eau, du relief et des reflets, sous les frontières et les noms :
+  // premier calque de type ligne ou texte après l'ombrage du relief.
+  const styleLayers = map.getStyle().layers
+  const afterHillshade = styleLayers.slice(styleLayers.findIndex(layer => layer.type === 'hillshade') + 1)
+  addAtlasPolarCaps(map, afterHillshade.find(layer => layer.type === 'line' || layer.type === 'symbol')?.id)
   addAtlasCountryLabels(map)
+  addAtlasContinentLabels(map)
 }
 
 // ─── Customize MapTiler style layers ─────────────────────────────────────────
@@ -701,7 +1241,9 @@ export default function WorldMap({
   const mapRef          = useRef<maplibregl.Map | null>(null)
   const svgRef          = useRef<SVGSVGElement>(null)
   const pinsGroupRef    = useRef<SVGGElement>(null)
-  const htmlMarkersRef  = useRef<Array<{ marker: maplibregl.Marker; root: Root; element: HTMLDivElement }>>([])
+  const globeGlowRef    = useRef<HTMLDivElement>(null)
+  const stopSeaRipplesRef = useRef<(() => void) | null>(null)
+  const htmlMarkersRef  = useRef<Array<{ marker: maplibregl.Marker; root?: Root; element: HTMLDivElement }>>([])
   const projFnRef       = useRef<Proj>(() => null)
   const lastAutoFitFingerprintRef = useRef<string | null>(null)
   const autoFitTimeoutRef = useRef<number | null>(null)
@@ -713,6 +1255,30 @@ export default function WorldMap({
   const [mapSize, setMapSize] = useState({ width: 0, height: 0 })
   const [expandedRouteKey, setExpandedRouteKey] = useState<string | null>(null)
   const [notationOpen, setNotationOpen] = useState(true)
+  // Globe 3D : visible en vue monde ; il passe le relais à la carte au clic sur
+  // une destination ou en zoomant, et revient au dézoom.
+  const [globeVisible, setGlobeVisible] = useState(true)
+  const [globeFly, setGlobeFly] = useState<GlobeCameraRequest | null>(null)
+  const [globeReturn, setGlobeReturn] = useState<GlobeCameraRequest | null>(null)
+  const earthPinElements = useRef(new Map<string, HTMLDivElement>())
+  // Globe en train de s'effacer sur la carte : il reste animé jusqu'au bout du
+  // fondu (la caméra continue sa plongée dans les nuages).
+  const [globeFading, setGlobeFading] = useState(false)
+  const globeVisibleRef = useRef(globeVisible)
+  globeVisibleRef.current = globeVisible
+  useEffect(() => {
+    // Pins de la carte affichés seulement une fois le globe effacé : jamais deux
+    // jeux de pins à la fois pendant le fondu.
+    document.documentElement.dataset.globeVisible = String(globeVisible || globeFading)
+    return () => { delete document.documentElement.dataset.globeVisible }
+  }, [globeVisible, globeFading])
+  // Fond spatial du globe : titre de la page en clair (index.css). Seul décor
+  // restant depuis le retrait des scènes de démonstration.
+  useEffect(() => {
+    document.documentElement.dataset.mapScene = 'earth3d'
+    return () => { delete document.documentElement.dataset.mapScene }
+  }, [])
+
   const legendTooltipIdBase = useId()
   const controlsClass = controlsMode === 'stacked-left'
     ? ' map-controls--stacked-left'
@@ -756,7 +1322,7 @@ export default function WorldMap({
   function clearHtmlMarkers() {
     for (const entry of htmlMarkersRef.current) {
       entry.marker.remove()
-      window.setTimeout(() => entry.root.unmount(), 0)
+      if (entry.root) window.setTimeout(() => entry.root?.unmount(), 0)
     }
     htmlMarkersRef.current = []
   }
@@ -799,11 +1365,22 @@ export default function WorldMap({
         container,
         style: STYLE_URL,
         center: INIT_CENTER,
-        zoom: INIT_ZOOM,
-        // Un seul monde : sans copies, MapLibre borne la carte à ±180° et arrête
-        // le dézoom quand le monde remplit l'écran. Ne pas ajouter de maxBounds
-        // [-180, 180] : les deux bords se confondent et le calcul du zoom plante.
+        zoom: getWorldZoom(container.clientWidth, container.clientHeight),
+        // Un seul monde. Ne pas ajouter de maxBounds [-180, 180] : les deux bords
+        // se confondent et le calcul du zoom plante.
         renderWorldCopies: false,
+        ...CINEMATIC_CAMERA,
+        transformCameraUpdate: ({ zoom }) => {
+          const amount = cinematicAmount(zoom)
+          return { pitch: CINEMATIC_CAMERA.pitch * amount, bearing: CINEMATIC_CAMERA.bearing * amount }
+        },
+        // Zoom plus fluide : on garde plus de tuiles en mémoire (le dézoom les
+        // retrouve), on laisse finir celles demandées pendant un zoom au lieu de
+        // les annuler, et les textures apparaissent en fondu.
+        maxTileCacheSize: 1200,
+        maxTileCacheZoomLevels: 8,
+        cancelPendingTileRequestsWhileZooming: false,
+        fadeDuration: 350,
         attributionControl: false,
         pitchWithRotate: false,
         dragRotate: false,
@@ -817,7 +1394,9 @@ export default function WorldMap({
           depth: true,
           stencil: true,
           premultipliedAlpha: true,
-          contextType: 'webgl',
+          // Pas de contextType : MapLibre essaie WebGL2 puis retombe sur WebGL1.
+          // Forcer WebGL1 faisait mesurer la projection du globe par une lecture
+          // GPU synchrone (readPixels) à chaque zoom : de petits à-coups.
         },
       })
       setMapError(null)
@@ -828,19 +1407,72 @@ export default function WorldMap({
       return
     }
 
+    // Molette plus rapide que le réglage par défaut (1/450) : revenir d'une
+    // destination au globe demandait près de 40 crans, une douzaine maintenant.
+    map.scrollZoom.setWheelZoomRate(1 / 130)
     map.on('load', () => {
       customizeAtlasPremiumStyle(map)
+      void addAtlasSeaRipples(map).then(base => {
+        if (base && mapRef.current === map) stopSeaRipplesRef.current = animateSeaRipples(map, base)
+      }).catch(() => { /* reflets indisponibles : la mer reste fixe */ })
+      // Globe en vue monde ; MapLibre repasse tout seul en carte plate en zoomant.
+      map.setProjection({ type: 'globe' })
+      // Ciel MapLibre transparent aussi : sinon une bande laiteuse coupe le haut du
+      // globe quand la caméra est inclinée.
+      map.setSky({
+        // Atmosphère native (diffusion de la lumière) : liseré bleu clair autour
+        // du globe, qui s'efface quand la carte redevient plate.
+        'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 0.65, 3.5, 0.55, 6, 0],
+        'sky-color': 'rgba(0, 0, 0, 0)',
+        'horizon-color': 'rgba(0, 0, 0, 0)',
+        'fog-color': 'rgba(0, 0, 0, 0)',
+        'sky-horizon-blend': 0,
+        'horizon-fog-blend': 0,
+        'fog-ground-blend': 1,
+      })
+      // Lumière de l'atmosphère, fixe par rapport à l'écran (lumière de studio) :
+      // presque de face, légèrement en haut à gauche ; le liseré reste fin et un peu
+      // plus clair de ce côté. Le moteur n'éclaire pas la surface du globe elle-même.
+      map.setLight({ anchor: 'viewport', position: [1.5, 300, 25] })
+      updateMapPadding(map)
+      // Projection brute pour le rendu React : updatePins masque ensuite la face cachée.
       projFnRef.current = ([lng, lat]) => {
         const { x, y } = map.project([lng, lat] as maplibregl.LngLatLike)
         return [x, y]
       }
       setCompactPins(Math.pow(2, map.getZoom() - INIT_ZOOM) < 2)
       setMapZoom(map.getZoom())
+      // À l'image suivante : la projection globe doit être en place pour mesurer
+      // le globe. (Pas de map.redraw() ici : « load » est émis pendant un rendu.)
+      requestAnimationFrame(() => updateMinZoom(map))
+      updateGlobeGlow(map, globeGlowRef.current)
       setMapReady(true)
     })
 
     // Mise à jour directe du DOM des pins — zéro re-render React par frame
-    map.on('move', () => updatePins(map))
+    map.on('move', () => {
+      updatePins(map)
+      updateGlobeGlow(map, globeGlowRef.current)
+    })
+    map.on('resize', () => {
+      updateMapPadding(map)
+      updateMinZoom(map)
+      updateGlobeGlow(map, globeGlowRef.current)
+    })
+    // Retour au globe 3D pendant le dézoom, dès qu'on repasse sous l'échelle du
+    // relais (avec une marge, pour ne pas faire de va-et-vient).
+    let lastZoom = map.getZoom()
+    map.on('zoom', () => {
+      const zoom = map.getZoom()
+      const zoomingOut = zoom < lastZoom
+      lastZoom = zoom
+      if (!zoomingOut || globeVisibleRef.current) return
+      const center = map.getCenter()
+      if (globeDistanceForZoom(map, zoom, center.lat) <= RETURN_TO_GLOBE_DISTANCE) return
+      map.stop()
+      setGlobeReturn({ lat: center.lat, lng: center.lng, token: Date.now(), distance: globeDistanceForZoom(map, zoom, center.lat) })
+      setGlobeVisible(true)
+    })
     map.on('zoomend', () => {
       setCompactPins(Math.pow(2, map.getZoom() - INIT_ZOOM) < 2)
       setMapZoom(map.getZoom())
@@ -851,6 +1483,7 @@ export default function WorldMap({
       if (autoFitTimeoutRef.current !== null) window.clearTimeout(autoFitTimeoutRef.current)
       clearHtmlMarkers()
       container.removeEventListener('webglcontextcreationerror', handleWebGlError as EventListener)
+      stopSeaRipplesRef.current?.()
       map.remove()
       mapRef.current = null
       setMapReady(false)
@@ -944,10 +1577,32 @@ export default function WorldMap({
     if (autoFitTimeoutRef.current !== null) window.clearTimeout(autoFitTimeoutRef.current)
     autoFitTimeoutRef.current = window.setTimeout(() => {
       if (!mapRef.current) return
+      // Déjà descendu du globe 3D vers la carte : on ne vole pas la caméra.
+      if (!globeVisibleRef.current) return
       mapRef.current.resize()
       fitMapToDestinations(mapRef.current, destinations, friendDestinations, { duration: 780 })
     }, 120)
   }, [hidden, mapReady, destinations, friendDestinations, flyTarget, selectedName, mapSize])
+
+  // Préchargement des tuiles autour des destinations, une fois le globe affiché.
+  // Relancé seulement si les positions changent, pas à chaque rendu.
+  const prefetchKey = getMapFocusFingerprint(destinations, friendDestinations)
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || !prefetchKey) return
+    const map = mapRef.current
+    const points = prefetchKey.split('|').map(pair => {
+      const [lng, lat] = pair.split(',').map(Number)
+      return { lng, lat }
+    })
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => {
+      void prefetchDestinationTiles(map, points, controller.signal)
+    }, 2500)
+    return () => {
+      window.clearTimeout(timeout)
+      controller.abort()
+    }
+  }, [mapReady, prefetchKey])
 
   // ── Mise à jour directe des transforms SVG (bypass React) ──────────────────
   function updatePins(map: maplibregl.Map) {
@@ -957,31 +1612,31 @@ export default function WorldMap({
       const lng = parseFloat(el.dataset.lng ?? '0')
       const lat = parseFloat(el.dataset.lat ?? '0')
       if (!isFinite(lng) || !isFinite(lat)) return
-      const { x, y } = map.project([lng, lat] as maplibregl.LngLatLike)
-      el.setAttribute('transform', `translate(${x},${y})`)
+      const point = projectVisible(map, lng, lat)
+      el.style.visibility = point ? '' : 'hidden'
+      if (point) el.setAttribute('transform', `translate(${point[0]},${point[1]})`)
     })
 
     pinsGroupRef.current.querySelectorAll<SVGGElement>('g.route-stop-root').forEach(el => {
       const lng = parseFloat(el.dataset.lng ?? '0')
       const lat = parseFloat(el.dataset.lat ?? '0')
       if (!isFinite(lng) || !isFinite(lat)) return
-      const { x, y } = map.project([lng, lat] as maplibregl.LngLatLike)
-      el.setAttribute('transform', `translate(${x},${y})`)
+      const point = projectVisible(map, lng, lat)
+      el.style.visibility = point ? '' : 'hidden'
+      if (point) el.setAttribute('transform', `translate(${point[0]},${point[1]})`)
     })
 
     pinsGroupRef.current.querySelectorAll<SVGGElement>('g.trip-pin-root').forEach(el => {
       const lng = parseFloat(el.dataset.lng ?? '0')
       const lat = parseFloat(el.dataset.lat ?? '0')
       if (!isFinite(lng) || !isFinite(lat)) return
-      const { x, y } = map.project([lng, lat] as maplibregl.LngLatLike)
-      el.setAttribute('transform', `translate(${x},${y})`)
+      const point = projectVisible(map, lng, lat)
+      el.style.visibility = point ? '' : 'hidden'
+      if (point) el.setAttribute('transform', `translate(${point[0]},${point[1]})`)
     })
 
     // Re-build route paths every map move — geodesic samples + fresh projection.
-    const project: Proj = ([lng, lat]) => {
-      const { x, y } = map.project([lng, lat] as maplibregl.LngLatLike)
-      return [x, y]
-    }
+    const project: Proj = ([lng, lat]) => projectVisible(map, lng, lat)
     pinsGroupRef.current.querySelectorAll<SVGGElement>('g.route-path-root').forEach(group => {
       const raw = group.dataset.stops
       if (!raw) {
@@ -1003,6 +1658,14 @@ export default function WorldMap({
   // ── Fly to destination ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!flyTarget || !mapRef.current || !mapReady) return
+    if (globeVisible) {
+      // La carte se place tout de suite à l'arrivée du relais, cachée sous le
+      // globe : ses tuiles chargent pendant l'approche.
+      mapRef.current.jumpTo({ center: [flyTarget.lng, flyTarget.lat], zoom: HANDOFF_ZOOM })
+      setGlobeFly({ lat: flyTarget.lat, lng: flyTarget.lng, token: Date.now(), distance: globeDistanceForZoom(mapRef.current, HANDOFF_ZOOM, flyTarget.lat) })
+      onFlyTargetConsumed()
+      return
+    }
     const zoneTargetMine = destinations.find(d => d.name === flyTarget.name && d.kind === 'zone')
     const zoneTargetFriend = !zoneTargetMine
       ? (friendDestinations ?? []).find(d => d.name === flyTarget.name && d.kind === 'zone')
@@ -1014,13 +1677,21 @@ export default function WorldMap({
       onFlyTargetConsumed()
       return
     }
+    // Vol de caméra : on prend de la hauteur, puis on plonge vite sur la
+    // destination (accélération franche, freinage net) en redressant la caméra.
+    // Les nuages de zoom défilent pendant la descente.
     mapRef.current.flyTo({
       center: [flyTarget.lng, flyTarget.lat] as maplibregl.LngLatLike,
-      zoom: Math.max(mapRef.current.getZoom(), 4),
-      duration: 760,
+      zoom: Math.max(mapRef.current.getZoom(), 7.6),
+      ...FLAT_CAMERA,
+      padding: cameraPaddingFor(mapRef.current),
+      duration: 2100,
+      curve: 1.9,
+      easing: t => (t < 0.5 ? 16 * t ** 5 : 1 - Math.pow(-2 * t + 2, 5) / 2),
+      essential: true,
     })
     onFlyTargetConsumed()
-  }, [flyTarget, mapReady, onFlyTargetConsumed, destinations, friendDestinations])
+  }, [flyTarget, mapReady, onFlyTargetConsumed, destinations, friendDestinations, globeVisible])
 
   const zoomBy = (factor: number) => {
     const map = mapRef.current
@@ -1159,7 +1830,74 @@ export default function WorldMap({
         })),
     ]
 
+    // Pastille de groupe : jusqu'à trois photos empilées et le nombre de
+    // destinations ; au clic, la caméra cadre le groupe pour le déplier.
+    const addClusterMarker = (pins: MapMarkerPin[]) => {
+      const lng = pins.reduce((sum, pin) => sum + pin.destination.lng, 0) / pins.length
+      const lat = pins.reduce((sum, pin) => sum + pin.destination.lat, 0) / pins.length
+      const element = document.createElement('div')
+      element.className = 'map-pin-marker-host'
+      element.style.width = '0'
+      element.style.height = '0'
+      element.style.overflow = 'visible'
+      element.style.pointerEvents = 'auto'
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'map-pin-cluster'
+      button.setAttribute('aria-label', t(`${pins.length} destinations, zoom in`, `${pins.length} destinations, zoomer`))
+      pins.slice(0, 3).forEach((pin, index) => {
+        const photo = document.createElement('span')
+        photo.className = 'map-pin-cluster-photo'
+        photo.style.setProperty('--stack-index', String(index))
+        const url = pin.destination.image
+        photo.style.setProperty('--pin-photo', url && !failedPhotos.has(url) ? `url("${url}")` : 'none')
+        button.appendChild(photo)
+      })
+      const count = document.createElement('span')
+      count.className = 'map-pin-cluster-count'
+      count.textContent = String(pins.length)
+      button.appendChild(count)
+      element.appendChild(button)
+      element.addEventListener('pointerdown', stopMarkerEvent)
+      element.addEventListener('click', (event) => {
+        stopMarkerEvent(event)
+        const bounds = new maplibregl.LngLatBounds()
+        for (const pin of pins) bounds.extend([pin.destination.lng, pin.destination.lat])
+        map.fitBounds(bounds, { padding: 160, maxZoom: 7.6, ...FLAT_CAMERA, duration: 1500, essential: true })
+      })
+      const marker = new maplibregl.Marker({ element, anchor: 'top-left', opacityWhenCovered: '0' })
+        .setLngLat([lng, lat])
+        .addTo(map)
+      element.style.zIndex = String(Math.round((90 - lat) * 10) + 5000)
+      htmlMarkersRef.current.push({ marker, element })
+    }
+
+    // Pins à moins de 46 px les uns des autres à l'écran : regroupés en une
+    // pastille. Le pin sélectionné reste toujours seul, et on ne regroupe plus en
+    // vue rapprochée.
+    const clustered = new Set<MapMarkerPin>()
+    if (map.getZoom() < 7.5) {
+      const placed = markerPins.map(pin => ({ pin, point: projectVisible(map, pin.destination.lng, pin.destination.lat) }))
+      const grouped = new Set<number>()
+      placed.forEach((entry, i) => {
+        const origin = entry.point
+        if (grouped.has(i) || !origin || entry.pin.selected) return
+        const group = [entry.pin]
+        placed.forEach((other, j) => {
+          if (j <= i || grouped.has(j) || !other.point || other.pin.selected) return
+          if (Math.hypot(other.point[0] - origin[0], other.point[1] - origin[1]) >= 46) return
+          group.push(other.pin)
+          grouped.add(j)
+        })
+        if (group.length < 2) return
+        grouped.add(i)
+        group.forEach(pin => clustered.add(pin))
+        addClusterMarker(group)
+      })
+    }
+
     for (const pin of markerPins) {
+      if (clustered.has(pin)) continue
       const element = document.createElement('div')
       element.className = 'map-pin-marker-host'
       element.style.width = '0'
@@ -1202,9 +1940,14 @@ export default function WorldMap({
       const marker = new maplibregl.Marker({
         element,
         anchor: 'top-left',
+        opacityWhenCovered: '0',
       })
         .setLngLat([pin.destination.lng, pin.destination.lat] as maplibregl.LngLatLike)
         .addTo(map)
+
+      // Superposition propre : les pins plus au sud (plus proches avec la caméra
+      // inclinée) passent devant ; le pin sélectionné passe devant tout.
+      element.style.zIndex = String(Math.round((90 - pin.destination.lat) * 10) + (pin.selected ? 10000 : 0))
 
       htmlMarkersRef.current.push({ marker, root, element })
     }
@@ -1226,6 +1969,59 @@ export default function WorldMap({
     onSelect,
   ])
 
+  const earthFocus = getBestGlobeCenter(getMapFocusPoints(destinations, friendDestinations))
+  const earthPinDestinations = destinations.filter(d => d.kind !== 'stop' && d.kind !== 'zone' && Number.isFinite(d.lat) && Number.isFinite(d.lng))
+
+  // Le globe s'efface sur la carte en fondu, pendant que sa caméra continue de
+  // plonger à travers les nuages (voir EarthGlobe, CameraRig).
+  const fadeOutGlobe = () => {
+    setGlobeVisible(false)
+    setGlobeFading(true)
+  }
+  useEffect(() => {
+    if (!globeFading) return
+    const timeout = window.setTimeout(() => setGlobeFading(false), GLOBE_FADE_MS)
+    return () => window.clearTimeout(timeout)
+  }, [globeFading])
+
+  // Le globe 3D arrive lancé sur la destination, au cœur des nuages : la carte
+  // (déjà en place, voir l'effet de vol) prend le relais sans pause et freine
+  // jusqu'à l'arrivée.
+  const handleGlobeDiveComplete = (lat: number, lng: number) => {
+    const map = mapRef.current
+    if (!map) return
+    fadeOutGlobe()
+    map.easeTo({
+      center: [lng, lat],
+      zoom: 9,
+      ...FLAT_CAMERA,
+      padding: destinationPaddingFor(map),
+      duration: 1500,
+      easing: t => 1 - Math.pow(1 - t, 3),
+      essential: true,
+    })
+  }
+
+  // Molette : le seuil est franchi et le globe plonge seul à travers les nuages
+  // jusqu'à `distance`. La carte se place déjà à l'échelle de l'arrivée, cachée
+  // sous le globe, pour charger ses tuiles pendant la plongée.
+  const handleGlobeZoomThrough = (lat: number, lng: number, distance: number) => {
+    const map = mapRef.current
+    if (!map) return
+    map.jumpTo({ center: [lng, lat], zoom: zoomForGlobeDistance(map, distance, lat) })
+  }
+
+  // Fin de cette plongée, dans la couche de nuages : la carte prend le relais et
+  // poursuit la chute en freinant (+1 zoom), pendant que le globe s'efface.
+  const handleGlobeZoomThroughComplete = (lat: number, lng: number, distance: number) => {
+    const map = mapRef.current
+    if (!map) return
+    const zoom = zoomForGlobeDistance(map, distance, lat)
+    map.jumpTo({ center: [lng, lat], zoom })
+    fadeOutGlobe()
+    map.easeTo({ zoom: zoom + 1, duration: 1100, easing: t => 1 - Math.pow(1 - t, 3), essential: true })
+  }
+
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <section
@@ -1234,6 +2030,52 @@ export default function WorldMap({
       draggable={false}
       onDragStartCapture={(event) => event.preventDefault()}
     >
+      <div className="map-aurora" aria-hidden="true" />
+      <div ref={globeGlowRef} className="map-globe-glow" aria-hidden="true" />
+      <div className={`earth-globe-layer${globeVisible ? '' : ' is-hidden'}`}>
+        <SpaceBackdrop />
+        <Suspense fallback={null}>
+          <EarthGlobe
+            focusLng={earthFocus?.[0] ?? null}
+            focusLat={earthFocus?.[1] ?? null}
+            offsetLeft={mapRef.current ? getSidebarInset(mapRef.current) : 0}
+            active={globeVisible || globeFading}
+            pins={earthPinDestinations.map(d => ({ key: d.name, lat: d.lat, lng: d.lng }))}
+            pinElements={earthPinElements}
+            flyTo={globeFly}
+            returnTo={globeReturn}
+            onDiveComplete={handleGlobeDiveComplete}
+            onZoomThrough={handleGlobeZoomThrough}
+            onZoomThroughComplete={handleGlobeZoomThroughComplete}
+            zoomThroughDistance={ZOOM_THROUGH_DISTANCE}
+          />
+        </Suspense>
+        <div className="earth-globe-pins">
+          {earthPinDestinations.map(d => (
+            <div
+              key={d.name}
+              className="earth-globe-pin"
+              style={{ visibility: 'hidden' }}
+              ref={element => {
+                if (element) earthPinElements.current.set(d.name, element)
+                else earthPinElements.current.delete(d.name)
+              }}
+            >
+              <Pin
+                destination={d}
+                projection={MARKER_PROJ}
+                compactMode
+                selected={d.name === selectedName}
+                onSelect={onSelect}
+                onZoomToZone={zoomToZone}
+                onExpandTrip={expandTripRoute}
+                owner="me"
+                shared={shared.has(destinationNameKey(d))}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
       <div ref={mapContainerRef} className="map-gl-container" draggable={false} />
       {!mapReady && !mapError && (
         <div
@@ -1356,6 +2198,12 @@ export default function WorldMap({
         <a href="https://www.maptiler.com/copyright/" target="_blank" rel="noopener noreferrer">© MapTiler</a>
         {' · '}
         <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap</a>
+        {' · '}
+        <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md" target="_blank" rel="noopener noreferrer">Terrain Tiles</a>
+        {' · '}
+        <a href="https://earthobservatory.nasa.gov/features/BlueMarble" target="_blank" rel="noopener noreferrer">NASA Blue Marble</a>
+        {' · '}
+        <a href="https://www.solarsystemscope.com/textures/" target="_blank" rel="noopener noreferrer">Solar System Scope</a>
       </p>}
     </section>
   )
@@ -1628,9 +2476,34 @@ const RoutePath = memo(function RoutePath({ stops, projection, color, owner }: R
 })
 
 
+// Photos dont l'adresse ne se charge pas : le pin montre alors l'initiale au lieu
+// d'un rond vide. Mémorisé pour ne pas retenter à chaque reconstruction des pins.
+const failedPhotos = new Set<string>()
+
+function useLoadablePhoto(url?: string | null) {
+  const [failed, setFailed] = useState(() => !!url && failedPhotos.has(url))
+  useEffect(() => {
+    if (!url) return
+    if (failedPhotos.has(url)) {
+      setFailed(true)
+      return
+    }
+    setFailed(false)
+    const image = new Image()
+    image.onerror = () => {
+      failedPhotos.add(url)
+      setFailed(true)
+    }
+    image.src = url
+    return () => { image.onerror = null }
+  }, [url])
+  return url && !failed ? url : null
+}
+
 const Pin = memo(function Pin({
   destination, projection, compactMode, selected, onSelect, onZoomToZone, onExpandTrip, owner = 'me', badge, badgeAvatarUrl, badgeBg, badgeFg, shared, tripBadges,
 }: PinProps) {
+  const photoUrl = useLoadablePhoto(destination.image)
   const projected = projection([destination.lng, destination.lat])
   if (!projected) return null
   const [cx, cy] = projected
@@ -1703,7 +2576,7 @@ const Pin = memo(function Pin({
        style={rootStyle}>
       <div className="pin-stage" style={{ marginLeft: '-82px', marginTop: '-148px', pointerEvents: 'auto' }}>
           <div
-            className={`map-pin${isCompact ? ' map-pin--compact' : ''}${destination.kind === 'stage' ? ' map-pin-stage' : ''}${owner === 'friend' ? ' map-pin--friend' : ''}${destination.image ? ' map-pin--has-photo' : ''}${isCoupDeCoeur ? ' map-pin--coup-de-coeur' : ''}${isRevisited ? ' map-pin--revisited' : ''}`}
+            className={`map-pin${isCompact ? ' map-pin--compact' : ''}${destination.kind === 'stage' ? ' map-pin-stage' : ''}${owner === 'friend' ? ' map-pin--friend' : ''}${photoUrl ? ' map-pin--has-photo' : ''}${isCoupDeCoeur ? ' map-pin--coup-de-coeur' : ''}${isRevisited ? ' map-pin--revisited' : ''}`}
             draggable={false}
             onPointerDown={stopMarkerEvent}
             onClick={(event) => {
@@ -1712,22 +2585,38 @@ const Pin = memo(function Pin({
             }}
             style={{
               '--pin-color': color,
-              '--pin-photo': destination.image ? `url("${destination.image}")` : 'none',
+              '--pin-photo': photoUrl ? `url("${photoUrl}")` : 'none',
             } as CSSProperties}>
-            <span className="map-pin-tier">{destinationTier ?? '?'}</span>
-            {isCoupDeCoeur && (
-              <span className="map-pin-heart" aria-label={t('Favorite', 'Coup de coeur')}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                  <path d="M20.8 4.6a5.4 5.4 0 0 0-7.7 0L12 5.7l-1.1-1.1a5.4 5.4 0 0 0-7.7 7.7L12 21l8.8-8.7a5.4 5.4 0 0 0 0-7.7Z" />
-                </svg>
-              </span>
+            {/* Sans photo : l'initiale de la ville plutôt qu'un rond vide. */}
+            {!photoUrl && (
+              <span className="map-pin-initial" aria-hidden="true">{destination.name.trim().charAt(0).toUpperCase()}</span>
             )}
-            {isLivedThere && (
-              <span className="map-pin-home" aria-label={t('Lived there', 'A vécu là-bas')}>🏠</span>
-            )}
-            {isRoadTrip && (
-              <span className="map-pin-roadtrip" aria-label={t('Road trip', 'Road trip')}>🚗</span>
-            )}
+            {/* Une seule capsule sous la photo : tier, puis les marqueurs éventuels. */}
+            <span className="map-pin-capsule">
+              <span className="map-pin-tier">{destinationTier ?? '?'}</span>
+              {isCoupDeCoeur && (
+                <span className="map-pin-capsule-icon map-pin-heart" aria-label={t('Favorite', 'Coup de coeur')}>
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M20.8 4.6a5.4 5.4 0 0 0-7.7 0L12 5.7l-1.1-1.1a5.4 5.4 0 0 0-7.7 7.7L12 21l8.8-8.7a5.4 5.4 0 0 0 0-7.7Z" />
+                  </svg>
+                </span>
+              )}
+              {isLivedThere && (
+                <span className="map-pin-capsule-icon map-pin-home" aria-label={t('Lived there', 'A vécu là-bas')}>
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M12 3.2 2.6 11h2.6v8.6c0 .6.4 1 1 1H10v-6h4v6h3.8c.6 0 1-.4 1-1V11h2.6Z" />
+                  </svg>
+                </span>
+              )}
+              {isRoadTrip && (
+                <span className="map-pin-capsule-icon map-pin-roadtrip" aria-label={t('Road trip', 'Road trip')}>
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M6.6 5.4A2 2 0 0 1 8.5 4h7a2 2 0 0 1 1.9 1.4L19 10h.5c.8 0 1.5.7 1.5 1.5V17h-2v2.2h-3V17H8v2.2H5V17H3v-5.5c0-.8.7-1.5 1.5-1.5H5Zm1.5 4.6h7.8l-1-3.2H9.1ZM6.5 15a1.3 1.3 0 1 0 0-2.6 1.3 1.3 0 0 0 0 2.6Zm11 0a1.3 1.3 0 1 0 0-2.6 1.3 1.3 0 0 0 0 2.6Z" />
+                  </svg>
+                </span>
+              )}
+              {shared && <span className="map-pin-capsule-shared" aria-label={t('Shared destination', 'Destination en commun')}>2x</span>}
+            </span>
             <strong>{pinLabel}</strong>
             {owner === 'friend' && badge && (
               <em
@@ -1742,7 +2631,6 @@ const Pin = memo(function Pin({
                   : badge}
               </em>
             )}
-            {shared && <em className="pin-shared-badge" aria-label={t('Shared destination', 'Destination en commun')}>2x</em>}
             {tripBadges && tripBadges.length > 0 && (
               <span className="pin-trip-badges" aria-hidden="true">
                 {tripBadges.map((b, i) => (

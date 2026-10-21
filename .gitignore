@@ -8,3 +8,4 @@ desktop.ini
 .codex-temp/
 .env
 supabase/.temp/
+*.tsbuildinfo
