@@ -30,7 +30,8 @@ interface NavProps {
   onSearch: (name: string) => void
   onShare: () => void
   onAccountClick: () => void
-  onOpenFriends: () => void
+  /** `anchor` : position du bouton Amis, pour ouvrir le panneau en menu déroulant. */
+  onOpenFriends: (anchor: DOMRect) => void
   onActivityFlyTo?: (lat: number, lng: number, name: string, actor?: { userId: string; handle: string; displayName: string }) => void
   viewingFriend?: { userId: string; handle: string; displayName: string } | null
   onBackToMyCarnet?: () => void
@@ -215,7 +216,13 @@ export default function Nav({
               )}
             </div>
           )}
-          <button onClick={onOpenFriends} aria-label={t('Friends', 'Amis')}>
+          <button
+            onClick={e => {
+              setFiltersOpen(false)
+              onOpenFriends(e.currentTarget.getBoundingClientRect())
+            }}
+            aria-label={t('Friends', 'Amis')}
+          >
             <Icon name="users" />
             {t('Friends', 'Amis')}
             {pendingFriendCount > 0 && (

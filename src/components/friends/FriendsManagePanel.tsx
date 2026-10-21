@@ -6,6 +6,8 @@ import { useFocusTrap } from '../../hooks/useFocusTrap'
 import { t } from '../../i18n'
 
 interface FriendsManagePanelProps {
+  /** Position sous le bouton Amis (en px depuis le haut et la droite) ; sans ancre, feuille centrée. */
+  anchor?: { top: number; right: number } | null
   onClose: () => void
   onOpenAddFriend: () => void
   onViewFriendCarnet: (friend: Friendship) => void
@@ -17,7 +19,7 @@ interface FriendsManagePanelProps {
  * Demandes reçues → Envoyées → Mes amis. Pas d'onglets — tout est visible
  * d'un coup d'œil. Actions icon-only à droite de chaque ligne.
  */
-export default function FriendsManagePanel({ onClose, onOpenAddFriend, onViewFriendCarnet, onCompareFriend }: FriendsManagePanelProps) {
+export default function FriendsManagePanel({ anchor, onClose, onOpenAddFriend, onViewFriendCarnet, onCompareFriend }: FriendsManagePanelProps) {
   const { accepted, incoming, outgoing, loading, acceptRequest, removeFriendship, error } = useFriends()
   const isEmpty = accepted.length === 0 && incoming.length === 0 && outgoing.length === 0
   const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null)
@@ -25,8 +27,20 @@ export default function FriendsManagePanel({ onClose, onOpenAddFriend, onViewFri
   const trapRef = useFocusTrap<HTMLDivElement>(true)
 
   return (
-    <div ref={trapRef} className="manage-overlay" role="dialog" aria-modal="true" aria-label={t('Manage friends', 'Gestion des amis')} onClick={onClose}>
-      <aside className="manage-panel" onClick={e => e.stopPropagation()}>
+    <div
+      ref={trapRef}
+      className={anchor ? 'manage-overlay manage-overlay--anchored' : 'manage-overlay'}
+      role="dialog"
+      aria-modal="true"
+      aria-label={t('Manage friends', 'Gestion des amis')}
+      onClick={onClose}
+      onKeyDown={e => { if (e.key === 'Escape') onClose() }}
+    >
+      <aside
+        className={anchor ? 'manage-panel manage-panel--popover' : 'manage-panel'}
+        style={anchor ? { top: anchor.top, right: anchor.right } : undefined}
+        onClick={e => e.stopPropagation()}
+      >
         <header className="manage-head">
           <div className="manage-title">
             <h2>{t('Friends', 'Amis')}</h2>

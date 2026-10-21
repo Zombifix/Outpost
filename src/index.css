@@ -1918,6 +1918,28 @@ svg {
   to   { opacity: 1; transform: none }
 }
 
+/* Ouvert depuis la barre du haut : menu déroulant sous le bouton, comme Filtres. */
+.manage-overlay--anchored {
+  background: transparent;
+  padding: 0;
+  animation: none;
+}
+
+.manage-panel--popover {
+  position: fixed;
+  max-height: calc(100vh - 140px);
+  border-radius: 24px;
+  background: var(--glass-bg-strong);
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  box-shadow: var(--glass-shadow), var(--glass-inner);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+}
+
+.manage-panel--popover .manage-head {
+  padding: 16px 16px 10px;
+}
+
 .manage-head {
   display: flex;
   align-items: center;

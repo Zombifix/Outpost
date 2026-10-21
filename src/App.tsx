@@ -459,6 +459,8 @@ function AppCore({
   const { friendships, sendRequestByUserId, acceptRequest } = useFriends()
   const [addFriendOpen, setAddFriendOpen] = useState(false)
   const [friendsManageOpen, setFriendsManageOpen] = useState(false)
+  // Ouvert depuis la barre du haut : menu déroulant sous le bouton Amis. Depuis la barre du bas : feuille centrée.
+  const [friendsAnchor, setFriendsAnchor] = useState<{ top: number; right: number } | null>(null)
   const [viewingFriend, setViewingFriend] = useState<{ userId: string; handle: string; displayName: string } | null>(null)
   const [compareFriend, setCompareFriend] = useState<import('./types').Friendship | null>(null)
   const [targetedCompare, setTargetedCompare] = useState<{ friendUserId: string; destinationKey: string } | null>(null)
@@ -1269,7 +1271,7 @@ function AppCore({
         pendingFriendCount={pendingFriendCount}
         onViewChange={setActiveView}
         onAddClick={() => setAddingDestination(true)}
-        onOpenFriends={() => setFriendsManageOpen(true)}
+        onOpenFriends={() => { setFriendsAnchor(null); setFriendsManageOpen(true) }}
       />
       <WorldMap
         destinations={visibleDestinations}
@@ -1476,7 +1478,10 @@ function AppCore({
         destinations={destinations}
         onShare={shareTierList}
         onAccountClick={() => setAccountOpen(value => !value)}
-        onOpenFriends={() => setFriendsManageOpen(true)}
+        onOpenFriends={anchor => {
+          setFriendsAnchor({ top: anchor.bottom + 8, right: window.innerWidth - anchor.right })
+          setFriendsManageOpen(true)
+        }}
         onActivityFlyTo={(lat, lng, name, actor) => {
           if (actor) setViewingFriend(actor)
           setActiveView('map')
@@ -1493,6 +1498,7 @@ function AppCore({
       {friendsManageOpen && (
         <Suspense fallback={null}>
           <FriendsManagePanel
+            anchor={friendsAnchor}
             onClose={() => setFriendsManageOpen(false)}
             onOpenAddFriend={() => { setFriendsManageOpen(false); setAddFriendOpen(true) }}
             onViewFriendCarnet={f => {
