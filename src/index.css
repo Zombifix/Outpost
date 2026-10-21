@@ -320,11 +320,11 @@ svg {
   align-items: center;
   justify-content: center;
   gap: 13px;
-  height: 36px;
+  height: 48px;
   width: 100%;
   padding: 0;
   flex-shrink: 0;
-  margin-bottom: 4px;
+  margin-bottom: 8px;
   color: var(--ink);
   border: 0;
   background: transparent;
@@ -332,7 +332,7 @@ svg {
 }
 
 .brand-logo {
-  height: 24px;
+  height: 32px;
   width: auto;
   display: block;
 }
