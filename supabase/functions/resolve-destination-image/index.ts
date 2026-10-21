@@ -5,7 +5,6 @@
 //   SUPABASE_SERVICE_ROLE_KEY
 //   UNSPLASH_ACCESS_KEY      optional
 //   PEXELS_API_KEY           optional
-//   ALLOWED_ORIGINS          optional, comma-separated
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -59,10 +58,15 @@ interface Candidate {
   imageQuery: string
 }
 
-const DEFAULT_ALLOWED = ['http://localhost:5173', 'http://localhost:4173']
-// Always allowed, even when ALLOWED_ORIGINS is set: a stale secret (old Railway
-// domain) silently blocked every image lookup from the live site.
-const SITE_ORIGINS = ['https://mvggcf5azrvtt7bzmhazitzg.57.129.154.4.sslip.io']
+// Allowed browser origins: the live site and local dev servers. Kept in code
+// rather than in the ALLOWED_ORIGINS secret, which still held the dead
+// Railway domain (a released domain can be claimed by someone else).
+const ALLOWED_ORIGINS = [
+  'https://mvggcf5azrvtt7bzmhazitzg.57.129.154.4.sslip.io',
+  'http://localhost:5173',
+  'http://localhost:4173',
+  'http://localhost:4747',
+]
 const FALLBACK_IMAGE = 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=900&q=85'
 const FAILED_RETRY_COOLDOWN_MS = 10 * 60_000
 const MIN_LANDSCAPE_RATIO = 1.15
@@ -99,9 +103,7 @@ const BANNER_MAX_WIDTH = 3840
 const WIKI_USER_AGENT = 'Outpost/1.0 (https://mvggcf5azrvtt7bzmhazitzg.57.129.154.4.sslip.io)'
 
 function getAllowedOrigins(): string[] {
-  const raw = Deno.env.get('ALLOWED_ORIGINS') ?? ''
-  const list = raw.split(',').map(s => s.trim()).filter(Boolean)
-  return [...SITE_ORIGINS, ...(list.length ? list : DEFAULT_ALLOWED)]
+  return ALLOWED_ORIGINS
 }
 
 function buildCorsHeaders(origin: string | null): Record<string, string> {

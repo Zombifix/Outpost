@@ -5,7 +5,6 @@
 //   SUPABASE_ANON_KEY
 //   SUPABASE_SERVICE_ROLE_KEY
 //   IMAGE_ADMIN_USER_IDS      comma-separated auth user ids
-//   ALLOWED_ORIGINS           optional, comma-separated
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -25,13 +24,19 @@ interface OverrideBody {
   score?: number
 }
 
-const DEFAULT_ALLOWED = ['http://localhost:5173', 'http://localhost:4173']
+// Allowed browser origins: the live site and local dev servers. Kept in code
+// rather than in the ALLOWED_ORIGINS secret, which still held the dead
+// Railway domain (a released domain can be claimed by someone else).
+const ALLOWED_ORIGINS = [
+  'https://mvggcf5azrvtt7bzmhazitzg.57.129.154.4.sslip.io',
+  'http://localhost:5173',
+  'http://localhost:4173',
+  'http://localhost:4747',
+]
 const VALID_SOURCES = new Set<ImageSource>(['unsplash', 'pexels', 'wikivoyage', 'wikipedia', 'wikimedia', 'fallback'])
 
 function getAllowedOrigins(): string[] {
-  const raw = Deno.env.get('ALLOWED_ORIGINS') ?? ''
-  const list = raw.split(',').map(s => s.trim()).filter(Boolean)
-  return list.length ? list : DEFAULT_ALLOWED
+  return ALLOWED_ORIGINS
 }
 
 function buildCorsHeaders(origin: string | null): Record<string, string> {

@@ -6,9 +6,6 @@
 // Secrets requis (à configurer côté Supabase) :
 //   SUPABASE_URL                — URL du projet (présent par défaut)
 //   SUPABASE_SERVICE_ROLE_KEY   — clé service-role (présent par défaut sur Supabase)
-//   ALLOWED_ORIGINS             — liste d'origines autorisées séparées par virgule
-//                                 (ex: "https://outpost.app,http://localhost:5173")
-//                                 Si non défini, fallback localhost dev uniquement.
 //
 // Body JSON: { email: string, inviteToken: string }
 // Header:   Authorization: Bearer <user_jwt>  (l'utilisateur connecté qui invite)
@@ -17,12 +14,18 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-const DEFAULT_ALLOWED = ['http://localhost:5173', 'http://localhost:4173']
+// Allowed browser origins: the live site and local dev servers. Kept in code
+// rather than in the ALLOWED_ORIGINS secret, which still held the dead
+// Railway domain (a released domain can be claimed by someone else).
+const ALLOWED_ORIGINS = [
+  'https://mvggcf5azrvtt7bzmhazitzg.57.129.154.4.sslip.io',
+  'http://localhost:5173',
+  'http://localhost:4173',
+  'http://localhost:4747',
+]
 
 function getAllowedOrigins(): string[] {
-  const raw = Deno.env.get('ALLOWED_ORIGINS') ?? ''
-  const list = raw.split(',').map(s => s.trim()).filter(Boolean)
-  return list.length ? list : DEFAULT_ALLOWED
+  return ALLOWED_ORIGINS
 }
 
 function buildCorsHeaders(origin: string | null): Record<string, string> {
