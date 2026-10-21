@@ -19682,14 +19682,22 @@ h3.compare-insight-headline {
   line-height: 1.5;
 }
 
-/* Fiche : la réponse choisie remplace la note chiffrée. */
-.criterion--answer {
-  grid-template-columns: 20px 1fr auto;
+/* Fiche : la réponse choisie remplace la note chiffrée. La colonne de valeur
+   n'a plus la largeur fixe d'un chiffre ; une réponse longue passe à la ligne
+   à l'intérieur de sa pastille. */
+.criterion.criterion--answer,
+.destination-card .criterion.criterion--answer {
+  grid-template-columns: 22px auto minmax(0, 1fr);
 }
 
-.criterion--answer strong {
-  padding: 0 10px;
-  white-space: nowrap;
+.criterion.criterion--answer strong {
+  justify-self: end;
+  max-width: 100%;
+  padding: 4px 12px;
+  border-radius: 14px;
+  white-space: normal;
+  text-align: right;
+  line-height: 1.3;
 }
 
 /* Groupe « À noter » de la tier list (notation v2). */
@@ -19715,4 +19723,39 @@ h3.compare-insight-headline {
 .result-adjust.wizard-result-secondary-actions {
   padding-top: 0;
   border-top: 0;
+}
+
+/* ── Liquid glass (Chromium only, see src/lib/liquidGlass.ts) ─────────────
+   The frosted rules above stay the fallback. When refraction is available the
+   tint gets much lighter and the blur much shorter, otherwise the lensing on
+   the rim would be hidden behind milky white. */
+.lg-on .lg-glass.lg-glass--control {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.08) 55%, rgba(255, 255, 255, 0.18));
+  border-color: rgba(255, 255, 255, 0.55);
+  backdrop-filter: var(--lg-filter) blur(2px) saturate(1.7) brightness(1.06);
+  -webkit-backdrop-filter: var(--lg-filter) blur(2px) saturate(1.7) brightness(1.06);
+}
+
+.lg-on .lg-glass.lg-glass--control:not(.active) {
+  box-shadow:
+    0 10px 28px rgba(30, 60, 100, 0.18),
+    0 2px 6px rgba(14, 34, 58, 0.10),
+    inset 1.5px 1.5px 0 -0.5px rgba(255, 255, 255, 0.9),
+    inset -1px -1px 0 -0.5px rgba(255, 255, 255, 0.5),
+    inset 0 0 10px rgba(255, 255, 255, 0.22);
+}
+
+.lg-on .lg-glass.lg-glass--panel {
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(246, 251, 255, 0.40) 60%, rgba(255, 255, 255, 0.50));
+  border-color: rgba(255, 255, 255, 0.6);
+  backdrop-filter: var(--lg-filter) blur(9px) saturate(1.8) brightness(1.06);
+  -webkit-backdrop-filter: var(--lg-filter) blur(9px) saturate(1.8) brightness(1.06);
+  box-shadow:
+    0 24px 60px rgba(40, 72, 112, 0.18),
+    0 6px 18px rgba(14, 34, 58, 0.08),
+    inset 1.5px 1.5px 0 -0.5px rgba(255, 255, 255, 0.95),
+    inset -1px -1px 0 -0.5px rgba(255, 255, 255, 0.55),
+    inset 0 0 18px rgba(255, 255, 255, 0.28);
 }
