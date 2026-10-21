@@ -19729,7 +19729,7 @@ h3.compare-insight-headline {
    The frosted rules above stay the fallback. When refraction is available the
    tint gets much lighter and the blur much shorter, otherwise the lensing on
    the rim would be hidden behind milky white. */
-.lg-on .lg-glass.lg-glass--control {
+html.lg-on [data-lg='control'] {
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.08) 55%, rgba(255, 255, 255, 0.18));
   border-color: rgba(255, 255, 255, 0.55);
@@ -19737,7 +19737,7 @@ h3.compare-insight-headline {
   -webkit-backdrop-filter: var(--lg-filter) blur(2px) saturate(1.7) brightness(1.06);
 }
 
-.lg-on .lg-glass.lg-glass--control:not(.active) {
+html.lg-on [data-lg='control']:not(.active) {
   box-shadow:
     0 10px 28px rgba(30, 60, 100, 0.18),
     0 2px 6px rgba(14, 34, 58, 0.10),
@@ -19746,7 +19746,7 @@ h3.compare-insight-headline {
     inset 0 0 10px rgba(255, 255, 255, 0.22);
 }
 
-.lg-on .lg-glass.lg-glass--panel {
+html.lg-on [data-lg='panel'] {
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(246, 251, 255, 0.40) 60%, rgba(255, 255, 255, 0.50));
   border-color: rgba(255, 255, 255, 0.6);
