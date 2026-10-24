@@ -532,7 +532,9 @@ function CloudBank({ bank }: { bank: React.MutableRefObject<CloudBankState | nul
   return <group ref={group} />
 }
 
-type ControlsLike = { enabled: boolean; autoRotate: boolean; update: () => void }
+type ControlsLike = { enabled: boolean; autoRotate: boolean; autoRotateSpeed: number; update: () => void }
+// Vitesse de la rotation automatique en vue monde (un tour en ~20 min).
+const AUTO_ROTATE_SPEED = 0.05
 
 const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 // Approche d'une destination : départ doux puis accélération ; la carte prend
@@ -669,6 +671,13 @@ function CameraRig({
     // molette continue ensuite directement sur le globe. On sort par le haut
     // d'une couche de nuages, qui s'éloigne sous la caméra.
     animation.current = null
+    // La plongée interrompue par le passage à la carte a laissé les contrôles
+    // désactivés : on les rend.
+    const controls = controlsRef.current
+    if (controls) {
+      controls.enabled = true
+      controls.autoRotate = true
+    }
     const distance = returnTo.distance ?? 2.3
     camera.position.copy(latLngToVector(returnTo.lat, returnTo.lng).multiplyScalar(distance))
     camera.lookAt(0, 0, 0)
@@ -711,6 +720,9 @@ function CameraRig({
       return
     }
     const distance = camera.position.length()
+    // Rotation lente réservée à la vue monde : près de la Terre (au retour de la
+    // carte notamment), la surface défilerait toute seule sous les yeux.
+    if (controls) controls.autoRotateSpeed = AUTO_ROTATE_SPEED * THREE.MathUtils.smoothstep(distance, 3, 4)
     const { lat, lng } = vectorToLatLng(camera.position)
     if (distance < zoomThroughDistance && !throughFired.current) {
       // Seuil franchi à la molette : on plonge d'un coup à travers les nuages,
@@ -1056,7 +1068,7 @@ export default function EarthGlobe({
         minPolarAngle={MIN_POLAR}
         maxPolarAngle={Math.PI - MIN_POLAR}
         autoRotate
-        autoRotateSpeed={0.05}
+        autoRotateSpeed={AUTO_ROTATE_SPEED}
       />
     </Canvas>
   )
