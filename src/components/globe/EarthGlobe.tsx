@@ -20,7 +20,7 @@ const TEXTURES = {
 // Lumière « de studio » : le soleil suit la caméra, en haut à gauche et un peu
 // de face. On voit toujours une face éclairée, avec la limite jour / nuit qui
 // passe sur le bord droit de la Terre.
-const SUN_FROM_CAMERA = new THREE.Vector3(-0.78, 0.38, 0.5)
+const SUN_FROM_CAMERA = new THREE.Vector3(-0.62, 0.36, 0.72)
 // De près, le soleil passe de face : la zone visée est en plein jour quand la
 // carte (toujours de jour) prend le relais.
 const SUN_FROM_CAMERA_CLOSE = new THREE.Vector3(-0.3, 0.3, 0.9)
@@ -77,15 +77,20 @@ const earthFragment = /* glsl */ `
     float dayAmount = smoothstep(-0.12, 0.25, ndl);
 
     vec3 day = texture2D(dayMap, vUv).rgb;
+    // Terre un peu désaturée et éclaircie : un fond de carte, pas une photo
+    // satellite ; les pays visités et les pins ressortent dessus.
+    float luma = dot(day, vec3(0.299, 0.587, 0.114));
+    day = mix(vec3(luma), day, 0.68) * 1.06 + 0.015;
     vec3 night = texture2D(nightMap, vUv).rgb;
     float ocean = texture2D(oceanMap, vUv).r;
     float cloud = texture2D(cloudMap, vUv + vec2(cloudOffset, 0.0)).r;
 
     // Côté jour : diffus doux. (Pas d'ombre de nuages : elle glissait sur les
     // continents et donnait l'impression d'un double calque.)
-    vec3 color = day * (0.035 + 1.08 * max(ndl, 0.0));
+    // Le côté nuit garde une lumière d'appoint : les continents y restent lisibles.
+    vec3 color = day * (0.2 + 0.92 * max(ndl, 0.0));
     // Côté nuit : lumières des villes, chaudes, qui s'effacent vers le jour.
-    color += night * vec3(1.0, 0.82, 0.58) * 1.5 * (1.0 - dayAmount) * (1.0 - cloud * 0.6);
+    color += night * vec3(1.0, 0.82, 0.58) * 0.8 * (1.0 - dayAmount) * (1.0 - cloud * 0.3);
     // Océans : reflet du soleil, fin et discret.
     vec3 H = normalize(sunDir + V);
     float spec = pow(max(dot(N, H), 0.0), 70.0) * ocean * dayAmount;
@@ -113,7 +118,9 @@ const cloudFragment = /* glsl */ `
     float ndl = dot(N, sunDir);
     float cloud = texture2D(cloudMap, vUv + vec2(cloudOffset, 0.0)).r;
     float light = 0.06 + 0.98 * max(ndl, 0.0);
-    float alpha = smoothstep(0.08, 0.9, cloud) * 0.92 * (0.15 + 0.85 * smoothstep(-0.2, 0.2, ndl)) * (1.0 - closeness);
+    // Voile léger : seules les masses nuageuses denses restent, à demi
+    // transparentes, pour ne pas cacher les pays.
+    float alpha = smoothstep(0.4, 0.95, cloud) * 0.5 * (0.15 + 0.85 * smoothstep(-0.2, 0.2, ndl)) * (1.0 - closeness);
     gl_FragColor = vec4(vec3(light), alpha);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -311,7 +318,7 @@ function SunGlow() {
     toward.set(0, 0, 0).addScaledVector(right, -0.7).addScaledVector(up, 0.72).normalize()
     const side = Math.sqrt(Math.max(0, 1 - 1 / (distance * distance)))
     const fade = THREE.MathUtils.smoothstep(distance, 2.2, 3.2)
-    for (const [sprite, size, strength, depth] of [[core.current, 0.62, 1, 0.05], [bloom.current, 2.3, 0.6, 0.0]] as const) {
+    for (const [sprite, size, strength, depth] of [[core.current, 0.5, 0.55, 0.05], [bloom.current, 2.0, 0.3, 0.0]] as const) {
       if (!sprite) continue
       sprite.position.copy(toward).multiplyScalar(side * 1.004).addScaledVector(forward, 1 / distance - depth)
       sprite.scale.setScalar(size)
@@ -747,93 +754,92 @@ function clampToPolarLimits(position: THREE.Vector3) {
 const MIN_CAMERA_DISTANCE = 1.15
 const MAX_CAMERA_DISTANCE = 6
 
-// Élan au lâcher : vitesse mesurée sur les derniers mouvements, plafonnée, puis
-// amortie en ~0,3 s. Pas d'élan si la souris était déjà arrêtée au lâcher.
-const MAX_SPIN_SPEED = 0.08 // degrés d'arc par ms
-const SPIN_DAMPING_MS = 280
-const SPIN_STALE_MS = 80
+// Orbite limitée : un glissement décale la caméra autour de sa pose de départ,
+// sans jamais dépasser ORBIT_MAX_LNG / ORBIT_MAX_LAT (résistance élastique en
+// approchant de la butée). Pas d'élan : au lâcher, la caméra revient en douceur
+// à sa pose, puis la rotation automatique repart. La Terre reste posée, la vue
+// reste cinématographique.
+const ORBIT_MAX_LNG = 25 // degrés
+const ORBIT_MAX_LAT = 18
+const ORBIT_RETURN_MS = 1100
 const MAX_CAMERA_LAT = 90 - (MIN_POLAR * 180) / Math.PI
-const wrapLng = (lng: number) => ((((lng + 180) % 360) + 360) % 360) - 180
+// Tend vers ±limit sans l'atteindre : le glissement freine au bord.
+const rubber = (value: number, limit: number) => limit * Math.tanh(value / limit)
 
-// Saisie du globe, comme sur une carte : le nord reste en haut, un glissement
-// horizontal fait tourner la Terre sur son axe (longitude exacte) et un
-// glissement vertical la fait basculer, le point attrapé suivant le curseur.
-// Élan amorti au lâcher ; la rotation automatique repart 2,5 s après.
 function GrabRotate({ controlsRef }: { controlsRef: React.MutableRefObject<ControlsLike | null> }) {
   const { camera, gl, size } = useThree()
   const state = useRef({
     dragging: false,
-    grabbed: new THREE.Vector3(),
-    velocity: { lat: 0, lng: 0 }, // degrés par ms
-    lastMove: 0,
+    // Pose de repos (avant le glissement) et décalage affiché par rapport à elle.
+    anchor: null as { lat: number; lng: number } | null,
+    offset: { lat: 0, lng: 0 },
+    // Décalage « brut » au début du glissement, et position du pointeur à ce moment.
+    raw: { lat: 0, lng: 0 },
+    pointer: { x: 0, y: 0 },
+    returning: null as { from: { lat: number; lng: number }; start: number } | null,
     idleSince: 0,
   })
   const raycaster = useMemo(() => new THREE.Raycaster(), [])
   const sphere = useMemo(() => new THREE.Sphere(new THREE.Vector3(), 1), [])
+  const scratch = useMemo(() => new THREE.Vector3(), [])
 
-  const hit = (clientX: number, clientY: number, target: THREE.Vector3) => {
+  const hitsGlobe = (clientX: number, clientY: number) => {
     const rect = gl.domElement.getBoundingClientRect()
     const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1)
     raycaster.setFromCamera(ndc, camera)
-    return raycaster.ray.intersectSphere(sphere, target)
+    return raycaster.ray.intersectSphere(sphere, scratch) !== null
   }
 
-  // Déplace la caméra de (dLat, dLng) degrés ; renvoie false en butée près d'un pôle.
-  const moveCamera = (dLat: number, dLng: number) => {
-    const from = vectorToLatLng(camera.position)
-    const lat = THREE.MathUtils.clamp(from.lat + dLat, -MAX_CAMERA_LAT, MAX_CAMERA_LAT)
-    camera.position.copy(latLngToVector(lat, from.lng + dLng, camera.position.length()))
+  // Degrés d'arc par pixel au centre du globe, à la distance actuelle : le point
+  // attrapé suit à peu près le curseur.
+  const degreesPerPixel = () => {
+    const distance = Math.max(1.01, camera.position.length())
+    const fov = ((camera as THREE.PerspectiveCamera).fov * Math.PI) / 180
+    const radiusPx = size.height / 2 / (Math.tan(fov / 2) * Math.sqrt(distance * distance - 1))
+    return 180 / Math.PI / radiusPx
+  }
+
+  const place = () => {
+    const s = state.current
+    if (!s.anchor) return
+    const lat = THREE.MathUtils.clamp(s.anchor.lat + s.offset.lat, -MAX_CAMERA_LAT, MAX_CAMERA_LAT)
+    camera.position.copy(latLngToVector(lat, s.anchor.lng + s.offset.lng, camera.position.length()))
     orientCamera(camera)
-    return lat === from.lat + dLat
   }
 
   useEffect(() => {
     const element = gl.domElement
-    const current = new THREE.Vector3()
     const onDown = (event: PointerEvent) => {
-      if (event.button !== 0 || !hit(event.clientX, event.clientY, state.current.grabbed)) return
-      state.current.dragging = true
-      state.current.velocity = { lat: 0, lng: 0 }
-      state.current.lastMove = performance.now()
+      if (event.button !== 0 || !hitsGlobe(event.clientX, event.clientY)) return
+      const s = state.current
+      if (!s.anchor) {
+        s.anchor = vectorToLatLng(camera.position)
+        s.offset = { lat: 0, lng: 0 }
+      }
+      // Repris pendant le retour : on repart du décalage affiché, sans saut.
+      s.returning = null
+      s.raw = { ...s.offset }
+      s.pointer = { x: event.clientX, y: event.clientY }
+      s.dragging = true
+      s.idleSince = 0
       element.setPointerCapture(event.pointerId)
       if (controlsRef.current) controlsRef.current.autoRotate = false
     }
     const onMove = (event: PointerEvent) => {
       const s = state.current
-      if (!s.dragging || !hit(event.clientX, event.clientY, current)) return
-      // Le point sous le curseur doit redevenir le point attrapé : la caméra se
-      // décale de l'écart entre les deux (exact en longitude, et en latitude au
-      // fil des mouvements).
-      const grabbed = vectorToLatLng(s.grabbed)
-      const under = vectorToLatLng(current)
-      const dLat = grabbed.lat - under.lat
-      const dLng = wrapLng(grabbed.lng - under.lng)
-      moveCamera(dLat, dLng)
-      const now = performance.now()
-      const dt = Math.max(8, now - s.lastMove)
-      s.velocity = {
-        lat: s.velocity.lat * 0.5 + (dLat / dt) * 0.5,
-        lng: s.velocity.lng * 0.5 + (dLng / dt) * 0.5,
-      }
-      s.lastMove = now
+      if (!s.dragging) return
+      const k = degreesPerPixel()
+      // Glisser vers la droite amène l'ouest sous le regard ; vers le bas, le nord.
+      const rawLng = s.raw.lng - (event.clientX - s.pointer.x) * k
+      const rawLat = s.raw.lat + (event.clientY - s.pointer.y) * k
+      s.offset = { lat: rubber(rawLat, ORBIT_MAX_LAT), lng: rubber(rawLng, ORBIT_MAX_LNG) }
+      place()
     }
     const onUp = (event: PointerEvent) => {
       const s = state.current
       if (!s.dragging) return
       s.dragging = false
-      const now = performance.now()
-      if (now - s.lastMove > SPIN_STALE_MS) {
-        s.velocity = { lat: 0, lng: 0 }
-      } else {
-        // Plafond sur la vitesse réelle à la surface (la longitude compte moins
-        // près des pôles).
-        const lat = vectorToLatLng(camera.position).lat
-        const speed = Math.hypot(s.velocity.lat, s.velocity.lng * Math.cos((lat * Math.PI) / 180))
-        if (speed > MAX_SPIN_SPEED) {
-          s.velocity = { lat: (s.velocity.lat * MAX_SPIN_SPEED) / speed, lng: (s.velocity.lng * MAX_SPIN_SPEED) / speed }
-        }
-      }
-      s.idleSince = now
+      s.returning = { from: { ...s.offset }, start: performance.now() }
       if (element.hasPointerCapture(event.pointerId)) element.releasePointerCapture(event.pointerId)
     }
     element.addEventListener('pointerdown', onDown)
@@ -848,19 +854,21 @@ function GrabRotate({ controlsRef }: { controlsRef: React.MutableRefObject<Contr
     }
   }, [camera, gl, size, controlsRef]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useFrame((_, delta) => {
+  useFrame(() => {
     const s = state.current
-    if (s.dragging) return
-    // Élan : on continue à la vitesse du lâcher, en l'amortissant.
-    const v = s.velocity
-    if (Math.abs(v.lat) + Math.abs(v.lng) > 1e-5) {
-      const ms = Math.min(delta * 1000, 50)
-      const free = moveCamera(v.lat * ms, v.lng * ms)
-      const decay = Math.exp(-ms / SPIN_DAMPING_MS)
-      // En butée près d'un pôle, seule la rotation en longitude continue.
-      s.velocity = { lat: free ? v.lat * decay : 0, lng: v.lng * decay }
+    const back = s.returning
+    if (back) {
+      const t = Math.min(1, (performance.now() - back.start) / ORBIT_RETURN_MS)
+      const remaining = 1 - easeInOut(t)
+      s.offset = { lat: back.from.lat * remaining, lng: back.from.lng * remaining }
+      place()
+      if (t >= 1) {
+        s.returning = null
+        s.anchor = null
+        s.idleSince = performance.now()
+      }
     }
-    if (s.idleSince && performance.now() - s.idleSince > 2500 && controlsRef.current) {
+    if (s.idleSince && performance.now() - s.idleSince > 1500 && controlsRef.current) {
       controlsRef.current.autoRotate = true
       s.idleSince = 0
     }

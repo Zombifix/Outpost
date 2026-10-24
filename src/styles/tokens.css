@@ -28,24 +28,24 @@
 }
 
 /* ─── Glass morphism tokens ─────────────────────────────────────────────── */
-/*     Direction éditoriale (atlas contemporain) : surfaces mates presque        */
-/*     opaques, fin filet sombre, pas de reflets ni de dégradés brillants.     */
+/*     Verre clair et translucide (liquid glass) : à garder, c'est l'identité  */
+/*     visuelle d'Outpost. Ne pas repasser en surfaces mates opaques.          */
 /*     (déplacés depuis index.css où ils étaient isolés à ~l.12360)         */
 :root {
-  --glass-bg:          rgba(250, 249, 246, 0.9);
-  --glass-bg-strong:   rgba(251, 250, 247, 0.95);
-  --glass-bg-soft:     rgba(250, 249, 246, 0.84);
-  --glass-border:      rgba(24, 34, 52, 0.09);
-  --glass-border-soft: rgba(24, 34, 52, 0.06);
+  --glass-bg:          linear-gradient(145deg, rgba(255, 255, 255, 0.64), rgba(244, 251, 255, 0.34));
+  --glass-bg-strong:   linear-gradient(145deg, rgba(255, 255, 255, 0.78), rgba(241, 249, 255, 0.48));
+  --glass-bg-soft:     linear-gradient(145deg, rgba(255, 255, 255, 0.48), rgba(236, 247, 255, 0.28));
+  --glass-border:      rgba(255, 255, 255, 0.74);
+  --glass-border-soft: rgba(255, 255, 255, 0.48);
   --glass-tint:        rgba(212, 235, 255, 0.24);
-  --glass-inner:       inset 0 0 0 1px rgba(24, 34, 52, 0.05);
-  --glass-shadow:      0 12px 32px rgba(8, 16, 32, 0.16), 0 2px 6px rgba(8, 16, 32, 0.06);
-  --glass-shadow-soft: 0 6px 18px rgba(8, 16, 32, 0.12), 0 1px 3px rgba(8, 16, 32, 0.05);
+  --glass-inner:       inset 0 1px 0 rgba(255, 255, 255, 0.92), inset 0 -1px 0 rgba(255, 255, 255, 0.30);
+  --glass-shadow:      0 26px 70px rgba(50, 82, 122, 0.18), 0 8px 22px rgba(14, 34, 58, 0.08);
+  --glass-shadow-soft: 0 14px 38px rgba(50, 82, 122, 0.13), 0 4px 14px rgba(14, 34, 58, 0.06);
   --glass-blur-subtle: blur(8px) saturate(1.2) brightness(1.02);
   --glass-blur-light:  blur(12px) saturate(1.35) brightness(1.04);
-  --glass-blur-soft:   blur(18px) saturate(1.05);
-  --glass-blur:        blur(20px) saturate(1.05);
-  --glass-blur-heavy:  blur(24px) saturate(1.05);
+  --glass-blur-soft:   blur(22px) saturate(1.55) brightness(1.04);
+  --glass-blur:        blur(34px) saturate(1.82) brightness(1.08);
+  --glass-blur-heavy:  blur(40px) saturate(1.9) brightness(1.1);
   --glass-radius:      28px;
   --glass-radius-sm:   18px;
   --glass-text:        #1c3152;
