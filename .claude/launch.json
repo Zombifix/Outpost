@@ -9,6 +9,12 @@
       "autoPort": true
     },
     {
+      "name": "wander-prod-build",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "preview", "--", "--port", "4748"],
+      "port": 4748
+    },
+    {
       "name": "wander-fake-friends",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
